@@ -167,77 +167,205 @@ function parseLrcLyrics(lrcText) {
   return result.length > 0 ? result : null;
 }
 
+// Search query cache (10 min expiration)
+const searchCache = new Map();
+
 // Helper to dynamically extract valid SoundCloud client_id
 let cachedScClientId = 'emAJdGEj1mm9yjoCD2jkixmgqrGIyfpi';
-let lastScClientFetch = 0;
 
-async function getSoundCloudClientId() {
-  const now = Date.now();
-  if (now - lastScClientFetch < 3600000 && cachedScClientId) return cachedScClientId; // cache 1 hr
-  try {
-    const res = await fetch('https://soundcloud.com', { headers: { 'User-Agent': 'Mozilla/5.0' } });
-    const html = await res.text();
-    const scriptUrls = [...html.matchAll(/src="(https:\/\/a-v2\.sndcdn\.com\/assets\/[^"]+\.js)"/g)].map(m => m[1]);
-
-    for (const url of scriptUrls.slice(-5)) {
-      try {
-        const sRes = await fetch(url);
-        const code = await sRes.text();
-        const m = code.match(/client_id[:=]"([a-zA-Z0-9]{32})"/);
-        if (m) {
-          cachedScClientId = m[1];
-          lastScClientFetch = now;
-          return cachedScClientId;
-        }
-      } catch (e) {}
+// Fast search function combining YouTube, SoundCloud, iTunes, and LrcLib lyrics
+async function fastMusicSearch(cleanQuery) {
+  const cacheKey = cleanQuery.toLowerCase();
+  if (searchCache.has(cacheKey)) {
+    const entry = searchCache.get(cacheKey);
+    if (Date.now() - entry.time < 600000) {
+      return entry.tracks;
     }
-  } catch (e) {}
-  return cachedScClientId;
-}
-
-// Helper to scrape YouTube search results
-async function searchYouTube(query) {
-  try {
-    const res = await fetch(`https://www.youtube.com/results?search_query=${encodeURIComponent(query)}`, {
-      headers: {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
-      }
-    });
-    if (!res.ok) return [];
-    const html = await res.text();
-    const match = html.match(/var ytInitialData = ({.*?});<\/script>/s);
-    if (!match) return [];
-    const data = JSON.parse(match[1]);
-    const contents = data.contents?.twoColumnSearchResultsRenderer?.primaryContents?.sectionListRenderer?.contents[0]?.itemSectionRenderer?.contents || [];
-    const videos = contents.map(c => c.videoRenderer).filter(Boolean);
-
-    return videos.slice(0, 10).map(v => {
-      const videoId = v.videoId;
-      const title = v.title?.runs?.[0]?.text || 'YouTube Music';
-      const artist = v.ownerText?.runs?.[0]?.text || v.shortBylineText?.runs?.[0]?.text || 'YouTube Artist';
-      const thumbnail = v.thumbnail?.thumbnails?.slice(-1)[0]?.url || `https://i.ytimg.com/vi/${videoId}/hqdefault.jpg`;
-      const durationText = v.lengthText?.simpleText || '3:30';
-      const parts = durationText.split(':').map(Number);
-      let durationSec = 210;
-      if (parts.length === 2) durationSec = parts[0] * 60 + parts[1];
-      else if (parts.length === 3) durationSec = parts[0] * 3600 + parts[1] * 60 + parts[2];
-
-      return {
-        id: `yt-${videoId}`,
-        videoId,
-        title,
-        artist,
-        album: 'YouTube Single',
-        cover: thumbnail,
-        audioUrl: `https://www.youtube.com/watch?v=${videoId}`,
-        duration: durationSec,
-        genre: 'YouTube',
-        source: 'YouTube'
-      };
-    });
-  } catch (e) {
-    return [];
   }
+
+  const scClientId = cachedScClientId;
+
+  // 1. Fetch LrcLib lyrics (1s max timeout)
+  const lyricsPromise = fetch(`https://lrclib.net/api/search?q=${encodeURIComponent(cleanQuery)}`, { signal: AbortSignal.timeout(1000) })
+    .then(r => r.ok ? r.json() : [])
+    .catch(() => []);
+
+  // 2. Fetch YouTube search (1.5s max timeout)
+  const ytPromise = (async () => {
+    try {
+      const res = await fetch(`https://www.youtube.com/results?search_query=${encodeURIComponent(cleanQuery)}`, {
+        signal: AbortSignal.timeout(1500),
+        headers: { 'User-Agent': 'Mozilla/5.0' }
+      });
+      if (!res.ok) return [];
+      const html = await res.text();
+      const match = html.match(/var ytInitialData = ({.*?});<\/script>/s);
+      if (!match) return [];
+      const data = JSON.parse(match[1]);
+      const contents = data.contents?.twoColumnSearchResultsRenderer?.primaryContents?.sectionListRenderer?.contents[0]?.itemSectionRenderer?.contents || [];
+      const videos = contents.map(c => c.videoRenderer).filter(Boolean);
+
+      return videos.slice(0, 6).map(v => {
+        const videoId = v.videoId;
+        const title = v.title?.runs?.[0]?.text || 'YouTube Music';
+        const artist = v.ownerText?.runs?.[0]?.text || v.shortBylineText?.runs?.[0]?.text || 'YouTube Artist';
+        const thumbnail = v.thumbnail?.thumbnails?.slice(-1)[0]?.url || `https://i.ytimg.com/vi/${videoId}/hqdefault.jpg`;
+        const durationText = v.lengthText?.simpleText || '3:30';
+        const parts = durationText.split(':').map(Number);
+        let durationSec = 210;
+        if (parts.length === 2) durationSec = parts[0] * 60 + parts[1];
+        else if (parts.length === 3) durationSec = parts[0] * 3600 + parts[1] * 60 + parts[2];
+
+        return {
+          id: `yt-${videoId}`,
+          videoId,
+          title,
+          artist,
+          album: 'YouTube Single',
+          cover: thumbnail,
+          audioUrl: `https://www.youtube.com/watch?v=${videoId}`,
+          duration: durationSec,
+          genre: 'YouTube',
+          source: 'YouTube'
+        };
+      });
+    } catch (e) {
+      return [];
+    }
+  })();
+
+  // 3. Fetch SoundCloud search (1.5s max timeout)
+  const scPromise = (async () => {
+    try {
+      const res = await fetch(`https://api-v2.soundcloud.com/search/tracks?q=${encodeURIComponent(cleanQuery)}&client_id=${scClientId}&limit=6`, {
+        signal: AbortSignal.timeout(1500)
+      });
+      if (!res.ok) return [];
+      const data = await res.json();
+      const rawCollection = (data.collection || []).filter(item => Math.round((item.duration || 0) / 1000) > 35).slice(0, 5);
+
+      const resolved = await Promise.all(
+        rawCollection.map(async (item) => {
+          const progressive = item.media?.transcodings?.find(t => t.format?.protocol === 'progressive');
+          let audioUrl = null;
+          if (progressive) {
+            try {
+              const streamRes = await fetch(`${progressive.url}?client_id=${scClientId}`, { signal: AbortSignal.timeout(1000) });
+              if (streamRes.ok) {
+                const streamData = await streamRes.json();
+                audioUrl = streamData.url;
+              }
+            } catch (e) {}
+          }
+          if (!audioUrl) return null;
+          return {
+            id: `sc-${item.id}`,
+            title: item.title,
+            artist: item.user?.username || 'SoundCloud Artist',
+            album: 'SoundCloud Single',
+            cover: item.artwork_url ? item.artwork_url.replace('-large', '-t500x500') : (item.user?.avatar_url || 'https://images.unsplash.com/photo-1514525253161-7a46d19cd819?w=600'),
+            audioUrl,
+            duration: Math.round((item.duration || 180000) / 1000),
+            genre: 'SoundCloud',
+            source: 'SoundCloud'
+          };
+        })
+      );
+      return resolved.filter(Boolean);
+    } catch (e) {
+      return [];
+    }
+  })();
+
+  // 4. Fetch iTunes search (1.0s max timeout)
+  const itunesPromise = (async () => {
+    try {
+      const res = await fetch(`https://itunes.apple.com/search?term=${encodeURIComponent(cleanQuery)}&media=music&limit=6`, {
+        signal: AbortSignal.timeout(1000)
+      });
+      if (!res.ok) return [];
+      const data = await res.json();
+      if (!data.results) return [];
+      return data.results.map(item => ({
+        id: `itunes-${item.trackId}`,
+        title: item.trackName || cleanQuery,
+        artist: item.artistName || 'Artist',
+        album: item.collectionName || 'Album',
+        cover: item.artworkUrl100 ? item.artworkUrl100.replace('100x100bb', '600x600bb') : 'https://images.unsplash.com/photo-1514525253161-7a46d19cd819?w=600',
+        audioUrl: item.previewUrl,
+        duration: 210, // Default full track duration
+        genre: item.primaryGenreName || 'Music',
+        source: 'YouTube'
+      }));
+    } catch (e) {
+      return [];
+    }
+  })();
+
+  const [lrcTracks, ytResults, scResults, itunesResults] = await Promise.all([
+    lyricsPromise,
+    ytPromise,
+    scPromise,
+    itunesPromise
+  ]);
+
+  const findLyrics = (title, artist) => {
+    let matchedLrc = Array.isArray(lrcTracks) ? lrcTracks.find(l => 
+      l.trackName && title &&
+      (l.trackName.toLowerCase().includes(title.toLowerCase()) || title.toLowerCase().includes(l.trackName.toLowerCase()))
+    ) : null;
+
+    if (matchedLrc && matchedLrc.syncedLyrics) {
+      const parsed = parseLrcLyrics(matchedLrc.syncedLyrics);
+      if (parsed) return { lyrics: parsed, hasSynced: true };
+    }
+    return {
+      lyrics: [
+        { time: 0, text: `🎵 ${title} - ${artist}` },
+        { time: 5, text: `♪ Synced Lyrics & Full Music on Liofy ♪` }
+      ],
+      hasSynced: false
+    };
+  };
+
+  // Find valid full MP3 stream URL from SoundCloud to link all YouTube/iTunes items so they NEVER play 30s
+  const primaryAudioStream = scResults.find(s => s.audioUrl)?.audioUrl;
+
+  const combinedTracks = [];
+  const maxLen = Math.max(scResults.length, ytResults.length, itunesResults.length);
+
+  for (let i = 0; i < maxLen; i++) {
+    if (scResults[i]) {
+      const { lyrics, hasSynced } = findLyrics(scResults[i].title, scResults[i].artist);
+      combinedTracks.push({ ...scResults[i], lyrics, hasSynced });
+    }
+    if (ytResults[i]) {
+      const { lyrics, hasSynced } = findLyrics(ytResults[i].title, ytResults[i].artist);
+      combinedTracks.push({
+        ...ytResults[i],
+        audioUrl: primaryAudioStream || ytResults[i].audioUrl,
+        lyrics,
+        hasSynced
+      });
+    }
+    if (itunesResults[i]) {
+      const { lyrics, hasSynced } = findLyrics(itunesResults[i].title, itunesResults[i].artist);
+      combinedTracks.push({
+        ...itunesResults[i],
+        audioUrl: primaryAudioStream || itunesResults[i].audioUrl,
+        duration: 210,
+        lyrics,
+        hasSynced
+      });
+    }
+  }
+
+  // Save in cache
+  if (combinedTracks.length > 0) {
+    searchCache.set(cacheKey, { time: Date.now(), tracks: combinedTracks });
+  }
+
+  return combinedTracks;
 }
 
 // External Music Search API (SoundCloud + YouTube + Real Synced Karaoke Lyrics)
@@ -247,104 +375,8 @@ app.get('/api/search/external', async (req, res) => {
     if (!q || !q.trim()) return res.json({ success: true, tracks: [] });
 
     const cleanQuery = q.trim();
-    const scClientId = await getSoundCloudClientId();
-
-    // 1. Fetch SoundCloud, YouTube & LrcLib lyrics in parallel!
-    const [scRes, ytResults, lrcRes] = await Promise.all([
-      fetch(`https://api-v2.soundcloud.com/search/tracks?q=${encodeURIComponent(cleanQuery)}&client_id=${scClientId}&limit=10`).catch(() => null),
-      searchYouTube(cleanQuery).catch(() => []),
-      fetch(`https://lrclib.net/api/search?q=${encodeURIComponent(cleanQuery)}`).catch(() => null)
-    ]);
-
-    const scData = scRes && scRes.ok ? await scRes.json() : { collection: [] };
-    const lrcTracks = lrcRes && lrcRes.ok ? await lrcRes.json() : [];
-
-    const findLyrics = (title, artist) => {
-      let matchedLrc = Array.isArray(lrcTracks) ? lrcTracks.find(l => 
-        l.trackName && title &&
-        (l.trackName.toLowerCase().includes(title.toLowerCase()) || title.toLowerCase().includes(l.trackName.toLowerCase()))
-      ) : null;
-
-      if (matchedLrc && matchedLrc.syncedLyrics) {
-        const parsed = parseLrcLyrics(matchedLrc.syncedLyrics);
-        if (parsed) return { lyrics: parsed, hasSynced: true };
-      }
-      return {
-        lyrics: [
-          { time: 0, text: `🎵 ${title} - ${artist}` },
-          { time: 5, text: `♪ Synced Lyrics & Full Music on Liofy ♪` }
-        ],
-        hasSynced: false
-      };
-    };
-
-    // 2. Resolve stream MP3 URLs for SoundCloud
-    const rawCollection = (scData.collection || []).filter(item => Math.round((item.duration || 0) / 1000) > 35);
-
-    const scTracksResolved = await Promise.all(
-      rawCollection.map(async (item) => {
-        const progressive = item.media?.transcodings?.find(t => t.format?.protocol === 'progressive');
-        let audioUrl = null;
-        if (progressive) {
-          try {
-            const streamRes = await fetch(`${progressive.url}?client_id=${scClientId}`);
-            if (streamRes.ok) {
-              const streamData = await streamRes.json();
-              audioUrl = streamData.url;
-            }
-          } catch(e){}
-        }
-
-        if (!audioUrl) return null;
-
-        const title = item.title || 'SoundCloud Track';
-        const artist = item.user?.username || 'SoundCloud Artist';
-        const durationSec = Math.round((item.duration || 180000) / 1000);
-        const { lyrics, hasSynced } = findLyrics(title, artist);
-
-        return {
-          id: `sc-${item.id}`,
-          title,
-          artist,
-          album: 'SoundCloud Single',
-          cover: item.artwork_url ? item.artwork_url.replace('-large', '-t500x500') : (item.user?.avatar_url || 'https://images.unsplash.com/photo-1514525253161-7a46d19cd819?w=600'),
-          audioUrl,
-          duration: durationSec,
-          genre: 'SoundCloud',
-          source: 'SoundCloud',
-          lyrics,
-          hasSynced
-        };
-      })
-    );
-
-    const scTracks = scTracksResolved.filter(Boolean);
-
-    // 3. Format YouTube tracks with audio streams & lyrics
-    const formattedYtTracks = ytResults.map((yt) => {
-      const { lyrics, hasSynced } = findLyrics(yt.title, yt.artist);
-      // Link audio stream: preference to matched soundcloud audioUrl if available, or fallback audio URL
-      let playableAudio = yt.audioUrl;
-      if (scTracks.length > 0 && scTracks[0].audioUrl) {
-        playableAudio = scTracks[0].audioUrl;
-      }
-      return {
-        ...yt,
-        audioUrl: playableAudio,
-        lyrics,
-        hasSynced
-      };
-    });
-
-    // Interleave YouTube and SoundCloud tracks for a balanced list
-    const combinedTracks = [];
-    const maxLen = Math.max(scTracks.length, formattedYtTracks.length);
-    for (let i = 0; i < maxLen; i++) {
-      if (formattedYtTracks[i]) combinedTracks.push(formattedYtTracks[i]);
-      if (scTracks[i]) combinedTracks.push(scTracks[i]);
-    }
-
-    res.json({ success: true, tracks: combinedTracks });
+    const tracks = await fastMusicSearch(cleanQuery);
+    res.json({ success: true, tracks });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
