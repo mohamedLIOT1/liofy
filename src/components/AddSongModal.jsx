@@ -121,14 +121,35 @@ export default function AddSongModal({ isOpen, onClose, onAddSong }) {
     setIsSearching(false);
   };
 
+  const fetchFullAudioStream = async (artist, title, fallbackUrl) => {
+    try {
+      const query = `${artist} ${title}`;
+      const invRes = await fetch(`https://inv.tux.pizza/api/v1/search?q=${encodeURIComponent(query)}&type=video`);
+      const invData = await invRes.json();
+      if (Array.isArray(invData) && invData.length > 0) {
+        const topMatch = invData[0];
+        if (topMatch && topMatch.videoId) {
+          return `https://inv.tux.pizza/latest_version?id=${topMatch.videoId}&itag=140`;
+        }
+      }
+    } catch (err) {
+      console.warn('Full audio stream fetch error:', err);
+    }
+    return fallbackUrl;
+  };
+
   const handleAddExternalTrack = async (track) => {
     if (addedTrackIds.has(track.id)) return;
 
     setAddedTrackIds((prev) => new Set(prev).add(track.id));
 
+    // Resolve full 3-5 minute audio stream
+    const fullAudioUrl = await fetchFullAudioStream(track.artist, track.title, track.audioUrl);
+
     const newTrack = {
       ...track,
       id: `track-${Date.now()}-${Math.floor(Math.random() * 1000)}`,
+      audioUrl: fullAudioUrl,
       plays: "5,400",
       liked: true,
       downloaded: true
