@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { X, Plus, Music, Image, Mic, FileAudio, Clock, Trash2, Check, Search, Sparkles, Loader2 } from 'lucide-react';
-import { API_BASE_URL } from '../config';
+import { searchMusicOnline } from '../utils/searchEngine';
 
 export default function AddSongModal({ isOpen, onClose, onAddSong }) {
   const [activeTab, setActiveTab] = useState('auto'); // 'auto' | 'quick' | 'custom'
@@ -27,155 +27,14 @@ export default function AddSongModal({ isOpen, onClose, onAddSong }) {
 
   const [isUploading, setIsUploading] = useState(false);
 
-  // Helper function to parse LRC format karaoke lyrics into timestamped array
-  const parseLrcLyrics = (lrcText) => {
-    if (!lrcText || typeof lrcText !== 'string') return null;
-    const lines = lrcText.split('\n');
-    const result = [];
-    const timeRegex = /\[(\d{2}):(\d{2})\.(\d{2,3})\](.*)/;
-
-    for (const line of lines) {
-      const match = line.match(timeRegex);
-      if (match) {
-        const minutes = parseInt(match[1], 10);
-        const seconds = parseInt(match[2], 10);
-        const totalSeconds = minutes * 60 + seconds;
-        const text = match[4].trim();
-        if (text) {
-          result.push({ time: totalSeconds, text });
-        }
-      }
-    }
-    return result.length > 0 ? result : null;
-  };
-
   const handleExternalSearch = async (queryToSearch) => {
     const q = queryToSearch || searchQuery;
     if (!q || !q.trim()) return;
 
     setIsSearching(true);
     try {
-      const cleanQuery = q.trim();
-
-      // 1. Fetch real synced lyrics from LrcLib API
-      let lrcTracks = [];
-      try {
-        const lrcRes = await fetch(`https://lrclib.net/api/search?q=${encodeURIComponent(cleanQuery)}`);
-        const lrcData = await lrcRes.json();
-        if (Array.isArray(lrcData)) lrcTracks = lrcData;
-      } catch(e){}
-
-      const getLyricsForSong = (songTitle, artistName) => {
-        let matchedLrc = lrcTracks.find((l) =>
-          l.trackName && songTitle &&
-          (l.trackName.toLowerCase().includes(songTitle.toLowerCase()) ||
-           songTitle.toLowerCase().includes(l.trackName.toLowerCase()))
-        );
-
-        if (matchedLrc && matchedLrc.syncedLyrics) {
-          const parsed = parseLrcLyrics(matchedLrc.syncedLyrics);
-          if (parsed) return { lyrics: parsed, hasSynced: true };
-        }
-
-        return {
-          lyrics: [
-            { time: 0, text: `🎵 ${songTitle}` },
-            { time: 5, text: `Artist: ${artistName}` },
-            { time: 15, text: `♪ Full Audio & Synced Karaoke on Liofy ♪` }
-          ],
-          hasSynced: false
-        };
-      };
-
-      // 2. SoundCloud Search (Direct High Quality MP3 Streams)
-      let scTracks = [];
-      const scClientId = 'emAJdGEj1mm9yjoCD2jkixmgqrGIyfpi';
-      try {
-        const scRes = await fetch(`https://api-v2.soundcloud.com/search/tracks?q=${encodeURIComponent(cleanQuery)}&client_id=${scClientId}&limit=12`);
-        const scData = await scRes.json();
-
-        if (scData && Array.isArray(scData.collection)) {
-          for (const item of scData.collection) {
-            const progressive = item.media?.transcodings?.find(t => t.format?.protocol === 'progressive');
-            let streamMp3Url = null;
-            if (progressive) {
-              try {
-                const streamRes = await fetch(`${progressive.url}?client_id=${scClientId}`);
-                const streamData = await streamRes.json();
-                streamMp3Url = streamData.url;
-              } catch(e){}
-            }
-
-            if (streamMp3Url) {
-              const songTitle = item.title || cleanQuery;
-              const artistName = item.user?.username || 'SoundCloud Artist';
-              const { lyrics, hasSynced } = getLyricsForSong(songTitle, artistName);
-
-              scTracks.push({
-                id: `sc-${item.id}`,
-                title: songTitle,
-                artist: artistName,
-                album: 'SoundCloud',
-                cover: item.artwork_url ? item.artwork_url.replace('-large', '-t500x500') : (item.user?.avatar_url || 'https://images.unsplash.com/photo-1514525253161-7a46d19cd819?w=600&auto=format&fit=crop&q=80'),
-                audioUrl: streamMp3Url,
-                duration: Math.round((item.duration || 180000) / 1000),
-                genre: 'SoundCloud',
-                source: 'SoundCloud',
-                lyrics,
-                hasSynced
-              });
-            }
-          }
-        }
-      } catch(e) {
-        console.warn('SoundCloud search:', e);
-      }
-
-      // 3. YouTube Search via Piped API
-      let ytTracks = [];
-      try {
-        const ytRes = await fetch(`https://api.piped.private.coffee/search?q=${encodeURIComponent(cleanQuery)}&filter=music_songs`);
-        const ytData = await ytRes.json();
-
-        if (ytData && Array.isArray(ytData.items)) {
-          for (const video of ytData.items.slice(0, 12)) {
-            const videoId = video.url ? video.url.replace('/watch?v=', '') : '';
-            const songTitle = video.title || cleanQuery;
-            const artistName = video.uploaderName || 'YouTube Artist';
-            const { lyrics, hasSynced } = getLyricsForSong(songTitle, artistName);
-
-            const thumb = video.thumbnail
-              ? video.thumbnail.replace(/w120-h120/, 'w600-h600')
-              : `https://i.ytimg.com/vi/${videoId}/hqdefault.jpg`;
-
-            // Mapped soundcloud audio or fallback stream
-            const scMatch = scTracks.find(s => s.title.toLowerCase().includes(songTitle.toLowerCase()));
-            const audioUrl = scMatch ? scMatch.audioUrl : (scTracks[0] ? scTracks[0].audioUrl : '');
-
-            if (audioUrl) {
-              ytTracks.push({
-                id: `yt-${videoId || Math.random()}`,
-                videoId,
-                title: songTitle,
-                artist: artistName,
-                album: 'YouTube Music',
-                cover: thumb,
-                audioUrl,
-                duration: video.duration || 210,
-                genre: 'YouTube',
-                source: 'YouTube',
-                lyrics,
-                hasSynced
-              });
-            }
-          }
-        }
-      } catch(e) {
-        console.warn('YouTube search:', e);
-      }
-
-      const combined = [...scTracks, ...ytTracks];
-      setSearchResults(combined);
+      const results = await searchMusicOnline(q);
+      setSearchResults(results);
     } catch (err) {
       console.warn('External search error:', err);
     }

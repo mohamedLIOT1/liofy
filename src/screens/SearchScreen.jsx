@@ -1,13 +1,14 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { Search as SearchIcon, Play, Heart, Plus, Loader2, Sparkles } from 'lucide-react';
 import { GENRES } from '../data/musicData';
-import { API_BASE_URL } from '../config';
+import { searchMusicOnline } from '../utils/searchEngine';
 
 export default function SearchScreen({ tracks, onSelectTrack, toggleLike, onAddSong }) {
   const [query, setQuery] = useState('');
   const [externalResults, setExternalResults] = useState([]);
   const [isSearchingExternal, setIsSearchingExternal] = useState(false);
   const [activeTab, setActiveTab] = useState('all'); // 'all' | 'local' | 'online'
+  const debounceTimerRef = useRef(null);
 
   const localFiltered = tracks.filter((t) => 
     t.title.toLowerCase().includes(query.toLowerCase()) ||
@@ -15,145 +16,40 @@ export default function SearchScreen({ tracks, onSelectTrack, toggleLike, onAddS
     (t.genre && t.genre.toLowerCase().includes(query.toLowerCase()))
   );
 
-  const parseLrcLyrics = (lrcText) => {
-    if (!lrcText || typeof lrcText !== 'string') return null;
-    const lines = lrcText.split('\n');
-    const result = [];
-    const timeRegex = /\[(\d{2}):(\d{2})\.(\d{2,3})\](.*)/;
-
-    for (const line of lines) {
-      const match = line.match(timeRegex);
-      if (match) {
-        const minutes = parseInt(match[1], 10);
-        const seconds = parseInt(match[2], 10);
-        const totalSeconds = minutes * 60 + seconds;
-        const text = match[4].trim();
-        if (text) {
-          result.push({ time: totalSeconds, text });
-        }
-      }
-    }
-    return result.length > 0 ? result : null;
-  };
-
   const handleSearchOnline = async (searchQ) => {
-    const q = searchQ || query;
-    if (!q || !q.trim()) return;
+    const q = searchQ !== undefined ? searchQ : query;
+    if (!q || !q.trim()) {
+      setExternalResults([]);
+      setIsSearchingExternal(false);
+      return;
+    }
 
     setIsSearchingExternal(true);
     try {
-      const cleanQuery = q.trim();
-
-      // 1. LrcLib Synced Lyrics
-      let lrcTracks = [];
-      try {
-        const lrcRes = await fetch(`https://lrclib.net/api/search?q=${encodeURIComponent(cleanQuery)}`);
-        const lrcData = await lrcRes.json();
-        if (Array.isArray(lrcData)) lrcTracks = lrcData;
-      } catch(e){}
-
-      const getLyrics = (songTitle, artistName) => {
-        let matchedLrc = lrcTracks.find((l) =>
-          l.trackName && songTitle &&
-          (l.trackName.toLowerCase().includes(songTitle.toLowerCase()) ||
-           songTitle.toLowerCase().includes(l.trackName.toLowerCase()))
-        );
-
-        if (matchedLrc && matchedLrc.syncedLyrics) {
-          const parsed = parseLrcLyrics(matchedLrc.syncedLyrics);
-          if (parsed) return { lyrics: parsed, hasSynced: true };
-        }
-
-        return {
-          lyrics: [
-            { time: 0, text: `🎵 ${songTitle}` },
-            { time: 5, text: `Artist: ${artistName}` },
-            { time: 15, text: `♪ Full Audio & Synced Lyrics on Liofy ♪` }
-          ],
-          hasSynced: false
-        };
-      };
-
-      // 2. SoundCloud
-      let scTracks = [];
-      const scClientId = 'emAJdGEj1mm9yjoCD2jkixmgqrGIyfpi';
-      try {
-        const scRes = await fetch(`https://api-v2.soundcloud.com/search/tracks?q=${encodeURIComponent(cleanQuery)}&client_id=${scClientId}&limit=10`);
-        const scData = await scRes.json();
-        if (scData && Array.isArray(scData.collection)) {
-          for (const item of scData.collection) {
-            const progressive = item.media?.transcodings?.find(t => t.format?.protocol === 'progressive');
-            let streamMp3Url = null;
-            if (progressive) {
-              try {
-                const streamRes = await fetch(`${progressive.url}?client_id=${scClientId}`);
-                const streamData = await streamRes.json();
-                streamMp3Url = streamData.url;
-              } catch(e){}
-            }
-
-            if (streamMp3Url) {
-              const songTitle = item.title || cleanQuery;
-              const artistName = item.user?.username || 'SoundCloud Artist';
-              const { lyrics, hasSynced } = getLyrics(songTitle, artistName);
-              scTracks.push({
-                id: `sc-${item.id}`,
-                title: songTitle,
-                artist: artistName,
-                album: 'SoundCloud',
-                cover: item.artwork_url ? item.artwork_url.replace('-large', '-t500x500') : (item.user?.avatar_url || 'https://images.unsplash.com/photo-1514525253161-7a46d19cd819?w=600'),
-                audioUrl: streamMp3Url,
-                duration: Math.round((item.duration || 180000) / 1000),
-                genre: 'SoundCloud',
-                source: 'SoundCloud',
-                lyrics,
-                hasSynced
-              });
-            }
-          }
-        }
-      } catch(e){}
-
-      // 3. YouTube
-      let ytTracks = [];
-      try {
-        const ytRes = await fetch(`https://api.piped.private.coffee/search?q=${encodeURIComponent(cleanQuery)}&filter=music_songs`);
-        const ytData = await ytRes.json();
-        if (ytData && Array.isArray(ytData.items)) {
-          for (const video of ytData.items.slice(0, 10)) {
-            const videoId = video.url ? video.url.replace('/watch?v=', '') : '';
-            const songTitle = video.title || cleanQuery;
-            const artistName = video.uploaderName || 'YouTube Artist';
-            const { lyrics, hasSynced } = getLyrics(songTitle, artistName);
-            const thumb = video.thumbnail ? video.thumbnail.replace(/w120-h120/, 'w600-h600') : `https://i.ytimg.com/vi/${videoId}/hqdefault.jpg`;
-
-            const scMatch = scTracks.find(s => s.title.toLowerCase().includes(songTitle.toLowerCase()));
-            const audioUrl = scMatch ? scMatch.audioUrl : (scTracks[0] ? scTracks[0].audioUrl : '');
-
-            if (audioUrl) {
-              ytTracks.push({
-                id: `yt-${videoId || Math.random()}`,
-                videoId,
-                title: songTitle,
-                artist: artistName,
-                album: 'YouTube Music',
-                cover: thumb,
-                audioUrl,
-                duration: video.duration || 210,
-                genre: 'YouTube',
-                source: 'YouTube',
-                lyrics,
-                hasSynced
-              });
-            }
-          }
-        }
-      } catch(e){}
-
-      setExternalResults([...scTracks, ...ytTracks]);
-    } catch(err){}
+      const results = await searchMusicOnline(q);
+      setExternalResults(results);
+    } catch(err) {
+      console.warn('Search error:', err);
+    }
     setIsSearchingExternal(false);
   };
+
+  // Live Auto Search as user types
+  useEffect(() => {
+    if (debounceTimerRef.current) clearTimeout(debounceTimerRef.current);
+
+    if (query && query.trim().length >= 2) {
+      debounceTimerRef.current = setTimeout(() => {
+        handleSearchOnline(query);
+      }, 400);
+    } else {
+      setExternalResults([]);
+    }
+
+    return () => {
+      if (debounceTimerRef.current) clearTimeout(debounceTimerRef.current);
+    };
+  }, [query]);
 
   const handlePlayOrAdd = (track) => {
     if (onAddSong) {
@@ -165,7 +61,7 @@ export default function SearchScreen({ tracks, onSelectTrack, toggleLike, onAddS
 
   return (
     <div className="flex-1 overflow-y-auto p-4 md:p-8 pb-32">
-      {/* Header with Search Input & Online Search Button */}
+      {/* Header with Search Input & Instant Search Button */}
       <div className="mb-6">
         <h1 className="text-3xl font-extrabold text-white mb-4">البحث عن الأغاني والليركس</h1>
         <div className="flex items-center gap-2 max-w-2xl">
@@ -173,12 +69,9 @@ export default function SearchScreen({ tracks, onSelectTrack, toggleLike, onAddS
             <SearchIcon className="absolute left-4 top-1/2 -translate-y-1/2 text-zinc-400" size={20} />
             <input
               type="text"
-              placeholder="ابحث في قناتك وفي YouTube و SoundCloud (مثال: ليجي سي، البخت...)"
+              placeholder="اكتب اسم الأغنية أو الفنان (مثال: ليجي سي، البخت...)"
               value={query}
               onChange={(e) => setQuery(e.target.value)}
-              onKeyDown={(e) => {
-                if (e.key === 'Enter') handleSearchOnline();
-              }}
               className="w-full bg-zinc-900 text-white placeholder-zinc-400 pl-12 pr-12 py-3.5 rounded-full border border-zinc-800 focus:outline-none focus:border-[#1DB954] text-sm font-semibold shadow-xl"
             />
             {query && (
@@ -194,12 +87,12 @@ export default function SearchScreen({ tracks, onSelectTrack, toggleLike, onAddS
             )}
           </div>
           <button
-            onClick={() => handleSearchOnline()}
+            onClick={() => handleSearchOnline(query)}
             disabled={isSearchingExternal}
             className="py-3.5 px-5 bg-[#1DB954] hover:bg-[#1ed760] text-black font-extrabold text-xs rounded-full shadow-lg transition-transform active:scale-95 flex items-center gap-1.5 shrink-0"
           >
             {isSearchingExternal ? <Loader2 size={16} className="animate-spin" /> : <Sparkles size={16} />}
-            <span>بحث أونلاين</span>
+            <span>بحث</span>
           </button>
         </div>
       </div>
@@ -232,7 +125,7 @@ export default function SearchScreen({ tracks, onSelectTrack, toggleLike, onAddS
               activeTab === 'online' ? 'bg-[#1DB954] text-black' : 'bg-zinc-900 text-zinc-400 hover:text-white'
             }`}
           >
-            YouTube & SoundCloud ({externalResults.length})
+            أغاني أونلاين ({externalResults.length})
           </button>
         </div>
       )}
