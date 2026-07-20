@@ -290,16 +290,14 @@ app.get('/api/search/external', async (req, res) => {
 
     const scTracks = resolved.filter(Boolean);
 
-    // Use first SoundCloud audio stream for YouTube tracks
-    const scAudio = scTracks.find(t => t.audioUrl)?.audioUrl;
-
-    // Format YouTube tracks (only if we have a SoundCloud audio to link)
-    const ytTracks = scAudio ? ytResults.map(yt => {
+    // Map each YouTube track to a DIFFERENT SoundCloud audio (by index)
+    const ytTracks = scTracks.length > 0 ? ytResults.map((yt, i) => {
+      const scMatch = scTracks[i % scTracks.length];
       const { lyrics, hasSynced } = findLyrics(yt.title, yt.artist);
       return {
         ...yt,
         album: 'YouTube Single',
-        audioUrl: scAudio,
+        audioUrl: scMatch.audioUrl,
         genre: 'YouTube',
         lyrics,
         hasSynced
