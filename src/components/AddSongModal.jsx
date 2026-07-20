@@ -59,23 +59,69 @@ export default function AddSongModal({ isOpen, onClose, onAddSong }) {
       try {
         const lrcRes = await fetch(`https://lrclib.net/api/search?q=${encodeURIComponent(q)}`);
         const lrcData = await lrcRes.json();
-        if (Array.isArray(lrcData)) {
-          lrcTracks = lrcData;
-        }
+        if (Array.isArray(lrcData)) lrcTracks = lrcData;
       } catch(e){}
 
-      // 2. Fetch tracks metadata from iTunes API
-      const itunesUrl = `https://itunes.apple.com/search?term=${encodeURIComponent(q)}&media=music&limit=30`;
+      // 2. Query YouTube directly via Invidious for full 3-5 minute audio streams
+      let ytTracks = [];
+      try {
+        const ytRes = await fetch(`https://inv.tux.pizza/api/v1/search?q=${encodeURIComponent(q)}&type=video`);
+        const ytData = await ytRes.json();
+        if (Array.isArray(ytData)) {
+          ytTracks = ytData.slice(0, 15).map((video) => {
+            const thumb = video.videoThumbnails && video.videoThumbnails.length > 0 
+              ? video.videoThumbnails[video.videoThumbnails.length - 1].url
+              : 'https://images.unsplash.com/photo-1514525253161-7a46d19cd819?w=600&auto=format&fit=crop&q=80';
+
+            // Match synced lyrics from LrcLib
+            let matchedLyrics = null;
+            const matchedLrc = lrcTracks.find((l) =>
+              l.trackName && video.title &&
+              (l.trackName.toLowerCase().includes(video.title.toLowerCase()) ||
+               video.title.toLowerCase().includes(l.trackName.toLowerCase()))
+            );
+
+            if (matchedLrc && matchedLrc.syncedLyrics) {
+              matchedLyrics = parseLrcLyrics(matchedLrc.syncedLyrics);
+            }
+
+            if (!matchedLyrics) {
+              matchedLyrics = [
+                { time: 0, text: `🎵 ${video.title}` },
+                { time: 5, text: `Artist: ${video.author}` },
+                { time: 15, text: `♪ Full YouTube Audio on Liofy ♪` }
+              ];
+            }
+
+            return {
+              id: `yt-${video.videoId}`,
+              title: video.title,
+              artist: video.author || q,
+              album: 'YouTube Full Track',
+              cover: thumb,
+              audioUrl: `https://inv.tux.pizza/latest_version?id=${video.videoId}&itag=140`,
+              duration: video.lengthSeconds || 240,
+              genre: 'Music',
+              lyrics: matchedLyrics
+            };
+          });
+        }
+      } catch(e){
+        console.warn('YouTube search fallback:', e);
+      }
+
+      // 3. Query iTunes API for official album tracks
+      const itunesUrl = `https://itunes.apple.com/search?term=${encodeURIComponent(q)}&media=music&limit=15`;
       const res = await fetch(itunesUrl);
       const data = await res.json();
 
-      if (data.results && Array.isArray(data.results) && data.results.length > 0) {
-        const formatted = data.results.map((item) => {
+      let itunesTracks = [];
+      if (data.results && Array.isArray(data.results)) {
+        itunesTracks = data.results.map((item) => {
           const highResCover = item.artworkUrl100 
             ? item.artworkUrl100.replace('100x100bb', '600x600bb')
             : 'https://images.unsplash.com/photo-1514525253161-7a46d19cd819?w=600&auto=format&fit=crop&q=80';
 
-          // Match synced lyrics from LrcLib
           let matchedLyrics = null;
           const matchedLrc = lrcTracks.find((l) =>
             l.trackName && item.trackName &&
@@ -85,12 +131,9 @@ export default function AddSongModal({ isOpen, onClose, onAddSong }) {
 
           if (matchedLrc && matchedLrc.syncedLyrics) {
             matchedLyrics = parseLrcLyrics(matchedLrc.syncedLyrics);
-          } else if (matchedLrc && matchedLrc.plainLyrics) {
-            const lines = matchedLrc.plainLyrics.split('\n').filter(l => l.trim().length > 0);
-            matchedLyrics = lines.map((text, idx) => ({ time: idx * 8, text }));
           }
 
-          if (!matchedLyrics || matchedLyrics.length === 0) {
+          if (!matchedLyrics) {
             matchedLyrics = [
               { time: 0, text: `🎵 ${item.trackName} - ${item.artistName}` },
               { time: 6, text: `Album: ${item.collectionName || 'Single'}` },
@@ -98,23 +141,23 @@ export default function AddSongModal({ isOpen, onClose, onAddSong }) {
             ];
           }
 
-          // Full Audio Stream URL fallback
-          const audioStreamUrl = item.previewUrl || 'https://cdn.pixabay.com/download/audio/2022/05/27/audio_1808fbf07a.mp3?filename=lofi-study-112191.mp3';
-
           return {
             id: `ext-${item.trackId || Date.now()}-${Math.floor(Math.random() * 1000)}`,
             title: item.trackName || item.collectionName || 'Track',
             artist: item.artistName || 'Unknown Artist',
             album: item.collectionName || 'Single',
             cover: highResCover,
-            audioUrl: audioStreamUrl,
+            audioUrl: item.previewUrl || 'https://cdn.pixabay.com/download/audio/2022/05/27/audio_1808fbf07a.mp3?filename=lofi-study-112191.mp3',
             duration: item.trackTimeMillis ? Math.round(item.trackTimeMillis / 1000) : 210,
             genre: item.primaryGenreName || 'Pop',
             lyrics: matchedLyrics
           };
         });
-        setSearchResults(formatted);
       }
+
+      // Combine YouTube tracks first (full duration) then iTunes tracks
+      const combined = [...ytTracks, ...itunesTracks];
+      setSearchResults(combined);
     } catch (err) {
       console.warn('External search error:', err);
     }
