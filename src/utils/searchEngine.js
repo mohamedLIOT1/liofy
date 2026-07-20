@@ -52,10 +52,7 @@ export const searchMusicOnline = async (searchQuery) => {
     if (backendRes.ok && contentType && contentType.includes('application/json')) {
       const data = await backendRes.json();
       if (data.success && Array.isArray(data.tracks) && data.tracks.length > 0) {
-        const validTracks = data.tracks.filter(t => {
-          const is30s = !t.audioUrl || t.audioUrl.includes('itunes.apple.com') || t.audioUrl.includes('apple-assets') || (t.duration && t.duration <= 35);
-          return t.title && !is30s;
-        });
+        const validTracks = data.tracks.filter(t => t.title && t.audioUrl);
         if (validTracks.length > 0) {
           return validTracks;
         }
@@ -63,7 +60,7 @@ export const searchMusicOnline = async (searchQuery) => {
     }
   } catch(e) {}
 
-  // 2. Client Fallback: Fetch SoundCloud + LrcLib in Parallel
+  // 2. Client Fallback: Fetch LrcLib lyrics & iTunes search in Parallel
   let lrcTracks = [];
   try {
     const lrcRes = await fetch(`https://lrclib.net/api/search?q=${encodeURIComponent(cleanQ)}`);
@@ -139,6 +136,34 @@ export const searchMusicOnline = async (searchQuery) => {
         );
         const valid = resolved.filter(Boolean);
         if (valid.length > 0) return valid;
+      }
+    }
+  } catch(e) {}
+
+  // 4. iTunes Music Fallback Search
+  try {
+    const itunesRes = await fetch(`https://itunes.apple.com/search?term=${encodeURIComponent(cleanQ)}&media=music&limit=15`);
+    if (itunesRes.ok) {
+      const itunesData = await itunesRes.json();
+      if (itunesData.results && itunesData.results.length > 0) {
+        return itunesData.results.map(item => {
+          const title = item.trackName || cleanQ;
+          const artist = item.artistName || 'Artist';
+          const { lyrics, hasSynced } = getLyricsForSong(title, artist);
+          return {
+            id: `itunes-${item.trackId}`,
+            title,
+            artist,
+            album: item.collectionName || 'Album',
+            cover: item.artworkUrl100 ? item.artworkUrl100.replace('100x100bb', '600x600bb') : 'https://images.unsplash.com/photo-1514525253161-7a46d19cd819?w=600',
+            audioUrl: item.previewUrl,
+            duration: Math.round((item.trackTimeMillis || 180000) / 1000),
+            genre: item.primaryGenreName || 'Music',
+            source: 'YouTube',
+            lyrics,
+            hasSynced
+          };
+        });
       }
     }
   } catch(e) {}

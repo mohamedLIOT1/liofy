@@ -167,6 +167,79 @@ function parseLrcLyrics(lrcText) {
   return result.length > 0 ? result : null;
 }
 
+// Helper to dynamically extract valid SoundCloud client_id
+let cachedScClientId = 'emAJdGEj1mm9yjoCD2jkixmgqrGIyfpi';
+let lastScClientFetch = 0;
+
+async function getSoundCloudClientId() {
+  const now = Date.now();
+  if (now - lastScClientFetch < 3600000 && cachedScClientId) return cachedScClientId; // cache 1 hr
+  try {
+    const res = await fetch('https://soundcloud.com', { headers: { 'User-Agent': 'Mozilla/5.0' } });
+    const html = await res.text();
+    const scriptUrls = [...html.matchAll(/src="(https:\/\/a-v2\.sndcdn\.com\/assets\/[^"]+\.js)"/g)].map(m => m[1]);
+
+    for (const url of scriptUrls.slice(-5)) {
+      try {
+        const sRes = await fetch(url);
+        const code = await sRes.text();
+        const m = code.match(/client_id[:=]"([a-zA-Z0-9]{32})"/);
+        if (m) {
+          cachedScClientId = m[1];
+          lastScClientFetch = now;
+          return cachedScClientId;
+        }
+      } catch (e) {}
+    }
+  } catch (e) {}
+  return cachedScClientId;
+}
+
+// Helper to scrape YouTube search results
+async function searchYouTube(query) {
+  try {
+    const res = await fetch(`https://www.youtube.com/results?search_query=${encodeURIComponent(query)}`, {
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+      }
+    });
+    if (!res.ok) return [];
+    const html = await res.text();
+    const match = html.match(/var ytInitialData = ({.*?});<\/script>/s);
+    if (!match) return [];
+    const data = JSON.parse(match[1]);
+    const contents = data.contents?.twoColumnSearchResultsRenderer?.primaryContents?.sectionListRenderer?.contents[0]?.itemSectionRenderer?.contents || [];
+    const videos = contents.map(c => c.videoRenderer).filter(Boolean);
+
+    return videos.slice(0, 10).map(v => {
+      const videoId = v.videoId;
+      const title = v.title?.runs?.[0]?.text || 'YouTube Music';
+      const artist = v.ownerText?.runs?.[0]?.text || v.shortBylineText?.runs?.[0]?.text || 'YouTube Artist';
+      const thumbnail = v.thumbnail?.thumbnails?.slice(-1)[0]?.url || `https://i.ytimg.com/vi/${videoId}/hqdefault.jpg`;
+      const durationText = v.lengthText?.simpleText || '3:30';
+      const parts = durationText.split(':').map(Number);
+      let durationSec = 210;
+      if (parts.length === 2) durationSec = parts[0] * 60 + parts[1];
+      else if (parts.length === 3) durationSec = parts[0] * 3600 + parts[1] * 60 + parts[2];
+
+      return {
+        id: `yt-${videoId}`,
+        videoId,
+        title,
+        artist,
+        album: 'YouTube Single',
+        cover: thumbnail,
+        audioUrl: `https://www.youtube.com/watch?v=${videoId}`,
+        duration: durationSec,
+        genre: 'YouTube',
+        source: 'YouTube'
+      };
+    });
+  } catch (e) {
+    return [];
+  }
+}
+
 // External Music Search API (SoundCloud + YouTube + Real Synced Karaoke Lyrics)
 app.get('/api/search/external', async (req, res) => {
   try {
@@ -174,11 +247,12 @@ app.get('/api/search/external', async (req, res) => {
     if (!q || !q.trim()) return res.json({ success: true, tracks: [] });
 
     const cleanQuery = q.trim();
-    const scClientId = 'emAJdGEj1mm9yjoCD2jkixmgqrGIyfpi';
+    const scClientId = await getSoundCloudClientId();
 
-    // 1. Fetch SoundCloud tracks & LrcLib lyrics in parallel!
-    const [scRes, lrcRes] = await Promise.all([
-      fetch(`https://api-v2.soundcloud.com/search/tracks?q=${encodeURIComponent(cleanQuery)}&client_id=${scClientId}&limit=15`).catch(() => null),
+    // 1. Fetch SoundCloud, YouTube & LrcLib lyrics in parallel!
+    const [scRes, ytResults, lrcRes] = await Promise.all([
+      fetch(`https://api-v2.soundcloud.com/search/tracks?q=${encodeURIComponent(cleanQuery)}&client_id=${scClientId}&limit=10`).catch(() => null),
+      searchYouTube(cleanQuery).catch(() => []),
       fetch(`https://lrclib.net/api/search?q=${encodeURIComponent(cleanQuery)}`).catch(() => null)
     ]);
 
@@ -204,7 +278,7 @@ app.get('/api/search/external', async (req, res) => {
       };
     };
 
-    // 2. Resolve stream MP3 URLs in parallel with Promise.all
+    // 2. Resolve stream MP3 URLs for SoundCloud
     const rawCollection = (scData.collection || []).filter(item => Math.round((item.duration || 0) / 1000) > 35);
 
     const scTracksResolved = await Promise.all(
@@ -246,7 +320,31 @@ app.get('/api/search/external', async (req, res) => {
 
     const scTracks = scTracksResolved.filter(Boolean);
 
-    res.json({ success: true, tracks: scTracks });
+    // 3. Format YouTube tracks with audio streams & lyrics
+    const formattedYtTracks = ytResults.map((yt) => {
+      const { lyrics, hasSynced } = findLyrics(yt.title, yt.artist);
+      // Link audio stream: preference to matched soundcloud audioUrl if available, or fallback audio URL
+      let playableAudio = yt.audioUrl;
+      if (scTracks.length > 0 && scTracks[0].audioUrl) {
+        playableAudio = scTracks[0].audioUrl;
+      }
+      return {
+        ...yt,
+        audioUrl: playableAudio,
+        lyrics,
+        hasSynced
+      };
+    });
+
+    // Interleave YouTube and SoundCloud tracks for a balanced list
+    const combinedTracks = [];
+    const maxLen = Math.max(scTracks.length, formattedYtTracks.length);
+    for (let i = 0; i < maxLen; i++) {
+      if (formattedYtTracks[i]) combinedTracks.push(formattedYtTracks[i]);
+      if (scTracks[i]) combinedTracks.push(scTracks[i]);
+    }
+
+    res.json({ success: true, tracks: combinedTracks });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }

@@ -26,12 +26,20 @@ export default function AddSongModal({ isOpen, onClose, onAddSong }) {
   ]);
 
   const [isUploading, setIsUploading] = useState(false);
+  const [hasSearched, setHasSearched] = useState(false);
+
+  React.useEffect(() => {
+    if (isOpen && activeTab === 'auto' && searchResults.length === 0 && !hasSearched) {
+      handleExternalSearch('ليجي سي');
+    }
+  }, [isOpen, activeTab]);
 
   const handleExternalSearch = async (queryToSearch) => {
     const q = queryToSearch || searchQuery;
     if (!q || !q.trim()) return;
 
     setIsSearching(true);
+    setHasSearched(true);
     try {
       const results = await searchMusicOnline(q);
       setSearchResults(results);
@@ -354,8 +362,8 @@ export default function AddSongModal({ isOpen, onClose, onAddSong }) {
                     );
                   })
               ) : (
-                <div className="py-10 text-center text-zinc-500 text-xs font-semibold">
-                  ابحث عن اسم الفنان لعرض أغانيه من YouTube و SoundCloud مع الليركس متزامنة 🎵
+                <div className="py-10 text-center text-zinc-400 text-xs font-semibold">
+                  {hasSearched ? 'لم نتمكن من العثور على أغاني بهذا الاسم. جرب البحث باسم فنان آخر 🎵' : 'ابحث عن اسم الفنان لعرض أغانيه من YouTube و SoundCloud مع الليركس متزامنة 🎵'}
                 </div>
               )}
             </div>
