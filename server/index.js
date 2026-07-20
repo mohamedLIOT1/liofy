@@ -225,6 +225,37 @@ async function scrapeYouTube(query, timeoutMs) {
   }
 }
 
+// YouTube API search (uses official Google API key if provided, or falls back to scraper)
+async function searchYouTube(query, timeoutMs) {
+  const apiKey = process.env.YOUTUBE_API_KEY;
+  if (apiKey) {
+    try {
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), timeoutMs);
+      const url = `https://www.googleapis.com/youtube/v3/search?part=snippet&q=${encodeURIComponent(query)}&type=video&maxResults=10&key=${apiKey}`;
+      const res = await fetch(url, { signal: controller.signal });
+      clearTimeout(timer);
+      if (res.ok) {
+        const data = await res.json();
+        if (data.items && Array.isArray(data.items)) {
+          return data.items.map(item => ({
+            id: `yt-${item.id.videoId}`,
+            videoId: item.id.videoId,
+            title: item.snippet?.title || 'YouTube Track',
+            artist: item.snippet?.channelTitle || 'YouTube Music',
+            cover: item.snippet?.thumbnails?.high?.url || item.snippet?.thumbnails?.medium?.url || `https://i.ytimg.com/vi/${item.id.videoId}/hqdefault.jpg`,
+            duration: 210,
+            source: 'YouTube'
+          }));
+        }
+      }
+    } catch (e) {
+      console.warn('YouTube API error, falling back to scraper:', e.message);
+    }
+  }
+  return scrapeYouTube(query, timeoutMs);
+}
+
 // External Music Search API — SoundCloud + YouTube + Synced Lyrics
 app.get('/api/search/external', async (req, res) => {
   try {
@@ -246,7 +277,7 @@ app.get('/api/search/external', async (req, res) => {
     const [scRes, lrcRes, ytResults] = await Promise.all([
       fetch(`https://api-v2.soundcloud.com/search/tracks?q=${encodeURIComponent(cleanQuery)}&client_id=${SC_CLIENT_ID}&limit=15`).catch(() => null),
       fetch(`https://lrclib.net/api/search?q=${encodeURIComponent(cleanQuery)}`).catch(() => null),
-      scrapeYouTube(cleanQuery, 4000)
+      searchYouTube(cleanQuery, 4000)
     ]);
 
     const scData = scRes && scRes.ok ? await scRes.json() : { collection: [] };
