@@ -1,6 +1,8 @@
 import React, { useState } from 'react';
 import { X, User, Lock, Mail, ShieldCheck, LogIn, UserPlus, Camera, Upload } from 'lucide-react';
 
+import { API_BASE_URL } from '../config';
+
 export default function AuthModal({ isOpen, onClose, currentUser, onLogin, onLogout }) {
   const [isSignup, setIsSignup] = useState(false);
   const [name, setName] = useState('');
@@ -23,10 +25,9 @@ export default function AuthModal({ isOpen, onClose, currentUser, onLogin, onLog
     }
   };
 
-  const handleSubmit = (e) => {
+  const handleSubmit = async (e) => {
     e.preventDefault();
     
-    // Check network connection
     if (!navigator.onLine) {
       alert('Network disconnected! Please connect to the internet to sign up / log in to your account.');
       return;
@@ -38,10 +39,27 @@ export default function AuthModal({ isOpen, onClose, currentUser, onLogin, onLog
       id: currentUser?.id || `user-${Date.now()}`,
       name: name || currentUser?.name || email.split('@')[0],
       email,
+      password,
       avatar: avatar || currentUser?.avatar || defaultAvatarSvg,
       isPremium: true,
       tasteProfile: ['Pop', 'Electronic', 'Arab Pop']
     };
+
+    // Sync account to Railway MongoDB Atlas Database
+    try {
+      const endpoint = isSignup ? '/api/auth/register' : '/api/auth/login';
+      const res = await fetch(`${API_BASE_URL}${endpoint}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(userData)
+      });
+      const data = await res.json();
+      if (data.success && data.user) {
+        userData.id = data.user._id || userData.id;
+      }
+    } catch(err) {
+      console.warn('DB auth status:', err);
+    }
 
     onLogin(userData);
     onClose();

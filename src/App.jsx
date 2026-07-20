@@ -22,6 +22,7 @@ import StatsScreen from './screens/StatsScreen';
 import CarModeScreen from './screens/CarModeScreen';
 import MixesScreen from './screens/MixesScreen';
 import PlaylistScreen from './screens/PlaylistScreen';
+import { API_BASE_URL } from './config';
 
 export default function App() {
   // User Account State (Prompt Sign Up / Login if null)
@@ -128,6 +129,37 @@ export default function App() {
       setIsAuthOpen(true);
     }
   }, [currentUser]);
+
+  // Fetch synced tracks from Railway Backend on boot
+  useEffect(() => {
+    const fetchServerTracks = async () => {
+      try {
+        const res = await fetch(`${API_BASE_URL}/api/tracks`);
+        const data = await res.json();
+        if (data.success && Array.isArray(data.tracks) && data.tracks.length > 0) {
+          const formattedServerTracks = data.tracks.map(t => ({
+            id: t._id || t.id,
+            title: t.title,
+            artist: t.artist,
+            album: t.album || 'Single',
+            cover: t.cover,
+            audioUrl: t.audioUrl,
+            lyrics: t.lyrics || [],
+            duration: 210,
+            liked: true
+          }));
+          setTracks(prev => {
+            const existingIds = new Set(prev.map(x => x.id || x._id));
+            const newUnique = formattedServerTracks.filter(x => !existingIds.has(x.id));
+            return [...newUnique, ...prev];
+          });
+        }
+      } catch (err) {
+        console.warn('Backend server status:', err);
+      }
+    };
+    fetchServerTracks();
+  }, []);
 
   // Save currentUser to localStorage
   useEffect(() => {
@@ -318,11 +350,25 @@ export default function App() {
     }
   };
 
-  const handleAddSong = (newSong) => {
+  const handleAddSong = async (newSong) => {
     if (!newSong) return;
     setTracks((prev) => [newSong, ...prev]);
     setCurrentTrack(newSong);
     setIsPlaying(true);
+
+    try {
+      const response = await fetch(`${API_BASE_URL}/api/tracks/add`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(newSong)
+      });
+      const data = await response.json();
+      if (data.success && data.track) {
+        console.log('✅ Track synced successfully to Railway MongoDB!');
+      }
+    } catch (err) {
+      console.warn('Backend sync status:', err);
+    }
   };
 
   const handleOpenEditSong = (track) => {

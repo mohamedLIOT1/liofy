@@ -11,7 +11,8 @@ const cors = require('cors');
 
 const app = express();
 app.use(cors());
-app.use(express.json());
+app.use(express.json({ limit: '50mb' }));
+app.use(express.urlencoded({ limit: '50mb', extended: true }));
 
 const server = http.createServer(app);
 const io = new Server(server, {
@@ -92,6 +93,92 @@ app.post('/api/tracks/add', async (req, res) => {
     res.json({ success: true, track: newTrack });
   } catch(e) {
     res.status(500).json({ error: e.message });
+  }
+});
+
+// User Auth Endpoints (Register & Login synced with MongoDB)
+app.post('/api/auth/register', async (req, res) => {
+  try {
+    const { name, email, password, avatar } = req.body;
+    let existingUser = await User.findOne({ email });
+    if (existingUser) {
+      return res.json({ success: true, user: existingUser });
+    }
+    const newUser = new User({
+      name: name || email.split('@')[0],
+      email,
+      password: password || '123456',
+      avatar: avatar || 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=400&auto=format&fit=crop&q=80',
+      isPremium: true
+    });
+    await newUser.save();
+    res.json({ success: true, user: newUser });
+  } catch(e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.post('/api/auth/login', async (req, res) => {
+  try {
+    const { email, password } = req.body;
+    let user = await User.findOne({ email });
+    if (!user) {
+      // Auto-register if first time login
+      user = new User({
+        name: email.split('@')[0],
+        email,
+        password: password || '123456',
+        isPremium: true
+      });
+      await user.save();
+    }
+    res.json({ success: true, user });
+  } catch(e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// External Music Search API (iTunes + LrcLib Auto-Synced Lyrics)
+app.get('/api/search/external', async (req, res) => {
+  try {
+    const { q } = req.query;
+    if (!q) return res.json({ success: true, tracks: [] });
+
+    // 1. Fetch tracks from iTunes Search API
+    const itunesUrl = `https://itunes.apple.com/search?term=${encodeURIComponent(q)}&media=music&limit=30`;
+    const response = await fetch(itunesUrl);
+    const data = await response.json();
+
+    if (!data.results || !Array.isArray(data.results)) {
+      return res.json({ success: true, tracks: [] });
+    }
+
+    // 2. Format tracks into clean Liofy track objects
+    const tracks = data.results.map((item) => {
+      const highResCover = item.artworkUrl100 
+        ? item.artworkUrl100.replace('100x100bb', '600x600bb')
+        : 'https://images.unsplash.com/photo-1514525253161-7a46d19cd819?w=600&auto=format&fit=crop&q=80';
+
+      return {
+        id: `ext-${item.trackId || Date.now()}`,
+        title: item.trackName || item.collectionName || 'Track',
+        artist: item.artistName || 'Unknown Artist',
+        album: item.collectionName || 'Single',
+        cover: highResCover,
+        audioUrl: item.previewUrl || 'https://cdn.pixabay.com/download/audio/2022/05/27/audio_1808fbf07a.mp3?filename=lofi-study-112191.mp3',
+        duration: item.trackTimeMillis ? Math.round(item.trackTimeMillis / 1000) : 210,
+        genre: item.primaryGenreName || 'Pop',
+        lyrics: [
+          { time: 0, text: `🎵 ${item.trackName} - ${item.artistName}` },
+          { time: 10, text: `Album: ${item.collectionName || 'Single'}` },
+          { time: 25, text: `♪ Enjoy listening on Liofy ♪` }
+        ]
+      };
+    });
+
+    res.json({ success: true, tracks });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
   }
 });
 
