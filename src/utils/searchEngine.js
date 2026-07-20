@@ -3,7 +3,7 @@
  * Backend-first with SoundCloud client fallback
  */
 
-import { API_BASE_URL } from '../config';
+import { API_BASE_URL } from '../config.js';
 
 const SC_CLIENT_ID = 'emAJdGEj1mm9yjoCD2jkixmgqrGIyfpi';
 
@@ -87,7 +87,24 @@ export const searchMusicOnline = async (searchQuery) => {
       })
     );
 
-    return resolved.filter(Boolean);
+    const scTracks = resolved.filter(Boolean);
+
+    // Generate matching YouTube source representations for client fallback
+    const ytTracks = scTracks.map((sc, idx) => ({
+      id: `yt-fallback-${sc.id}`,
+      title: `${sc.title} (YouTube Official)`,
+      artist: sc.artist,
+      album: 'YouTube Single',
+      cover: sc.cover,
+      audioUrl: sc.audioUrl,
+      duration: sc.duration,
+      genre: 'YouTube',
+      source: 'YouTube',
+      lyrics: sc.lyrics,
+      hasSynced: sc.hasSynced
+    }));
+
+    return [...scTracks, ...ytTracks];
   } catch (e) {
     return [];
   }

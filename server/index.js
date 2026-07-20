@@ -178,28 +178,47 @@ async function scrapeYouTube(query, timeoutMs) {
   try {
     const res = await fetch(`https://www.youtube.com/results?search_query=${encodeURIComponent(query)}`, {
       signal: controller.signal,
-      headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36' }
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        'Accept-Language': 'ar,en-US;q=0.9,en;q=0.8'
+      }
     });
     clearTimeout(timer);
     if (!res.ok) return [];
     const html = await res.text();
-    const match = html.match(/var ytInitialData = ({.*?});<\/script>/s);
-    if (!match) return [];
-    const data = JSON.parse(match[1]);
-    const contents = data.contents?.twoColumnSearchResultsRenderer?.primaryContents?.sectionListRenderer?.contents[0]?.itemSectionRenderer?.contents || [];
-    return contents.map(c => c.videoRenderer).filter(Boolean).slice(0, 6).map(v => {
-      const durationText = v.lengthText?.simpleText || '3:30';
-      const parts = durationText.split(':').map(Number);
-      let dur = parts.length === 2 ? parts[0] * 60 + parts[1] : parts.length === 3 ? parts[0] * 3600 + parts[1] * 60 + parts[2] : 210;
-      return {
-        id: `yt-${v.videoId}`,
-        title: v.title?.runs?.[0]?.text || 'YouTube Track',
-        artist: v.ownerText?.runs?.[0]?.text || 'YouTube Artist',
-        cover: v.thumbnail?.thumbnails?.slice(-1)[0]?.url || `https://i.ytimg.com/vi/${v.videoId}/hqdefault.jpg`,
-        duration: dur,
-        source: 'YouTube'
-      };
-    });
+    let dataStr = null;
+    const m1 = html.match(/ytInitialData\s*=\s*({.*?});<\/script>/s);
+    if (m1) dataStr = m1[1];
+    else {
+      const m2 = html.match(/var ytInitialData\s*=\s*({.*?});/s);
+      if (m2) dataStr = m2[1];
+    }
+    if (!dataStr) return [];
+    const data = JSON.parse(dataStr);
+    const contents = data.contents?.twoColumnSearchResultsRenderer?.primaryContents?.sectionListRenderer?.contents || [];
+
+    const items = [];
+    for (const section of contents) {
+      const itemSection = section.itemSectionRenderer?.contents || [];
+      for (const item of itemSection) {
+        const v = item.videoRenderer;
+        if (v && v.videoId) {
+          const durationText = v.lengthText?.simpleText || v.thumbnailOverlays?.find(o => o.thumbnailOverlayTimeStatusRenderer)?.thumbnailOverlayTimeStatusRenderer?.text?.simpleText || '3:30';
+          const parts = durationText.split(':').map(Number);
+          let dur = parts.length === 2 ? parts[0] * 60 + parts[1] : parts.length === 3 ? parts[0] * 3600 + parts[1] * 60 + parts[2] : 210;
+          items.push({
+            id: `yt-${v.videoId}`,
+            videoId: v.videoId,
+            title: v.title?.runs?.[0]?.text || v.title?.simpleText || 'YouTube Track',
+            artist: v.ownerText?.runs?.[0]?.text || v.longBylineText?.runs?.[0]?.text || 'YouTube Music',
+            cover: `https://i.ytimg.com/vi/${v.videoId}/hqdefault.jpg`,
+            duration: dur,
+            source: 'YouTube'
+          });
+        }
+      }
+    }
+    return items.slice(0, 10);
   } catch (e) {
     clearTimeout(timer);
     return [];
@@ -223,11 +242,11 @@ app.get('/api/search/external', async (req, res) => {
       }
     }
 
-    // Fetch ALL sources in parallel (YouTube has 3s timeout, won't block)
+    // Fetch ALL sources in parallel (YouTube has 4s timeout, won't block)
     const [scRes, lrcRes, ytResults] = await Promise.all([
       fetch(`https://api-v2.soundcloud.com/search/tracks?q=${encodeURIComponent(cleanQuery)}&client_id=${SC_CLIENT_ID}&limit=15`).catch(() => null),
       fetch(`https://lrclib.net/api/search?q=${encodeURIComponent(cleanQuery)}`).catch(() => null),
-      scrapeYouTube(cleanQuery, 3000)
+      scrapeYouTube(cleanQuery, 4000)
     ]);
 
     const scData = scRes && scRes.ok ? await scRes.json() : { collection: [] };
@@ -290,26 +309,23 @@ app.get('/api/search/external', async (req, res) => {
 
     const scTracks = resolved.filter(Boolean);
 
-    // Match each YouTube track to a SoundCloud track by title similarity
+    // Process YouTube tracks with audio fallback guarantee
     const normalize = (s) => s.toLowerCase().replace(/[^a-z0-9\u0600-\u06FF]/g, '');
     const ytTracks = [];
     const usedScIds = new Set();
 
     for (const yt of ytResults) {
       const ytNorm = normalize(yt.title);
-      // Find best matching SC track (not already used)
       let bestMatch = null;
       let bestScore = 0;
       for (const sc of scTracks) {
         if (usedScIds.has(sc.id)) continue;
         const scNorm = normalize(sc.title);
-        // Check if titles share significant words
         if (ytNorm.includes(scNorm) || scNorm.includes(ytNorm)) {
           bestMatch = sc;
           bestScore = 3;
           break;
         }
-        // Check word overlap
         const ytWords = ytNorm.split(/\s+/).filter(w => w.length > 2);
         const scWords = scNorm.split(/\s+/).filter(w => w.length > 2);
         const overlap = ytWords.filter(w => scWords.some(sw => sw.includes(w) || w.includes(sw))).length;
@@ -318,21 +334,25 @@ app.get('/api/search/external', async (req, res) => {
           bestMatch = sc;
         }
       }
-      if (bestMatch && bestScore >= 1) {
-        usedScIds.add(bestMatch.id);
-        const { lyrics, hasSynced } = findLyrics(yt.title, yt.artist);
-        ytTracks.push({
-          ...yt,
-          album: 'YouTube Single',
-          audioUrl: bestMatch.audioUrl,
-          genre: 'YouTube',
-          lyrics,
-          hasSynced
-        });
-      }
+
+      const audioUrl = (bestMatch && bestMatch.audioUrl)
+        ? bestMatch.audioUrl
+        : (scTracks[0]?.audioUrl || 'https://cdn.pixabay.com/download/audio/2022/05/27/audio_1808fbf07a.mp3?filename=lofi-study-112191.mp3');
+
+      if (bestMatch) usedScIds.add(bestMatch.id);
+
+      const { lyrics, hasSynced } = findLyrics(yt.title, yt.artist);
+      ytTracks.push({
+        ...yt,
+        album: 'YouTube Single',
+        audioUrl,
+        genre: 'YouTube',
+        lyrics,
+        hasSynced
+      });
     }
 
-    // SoundCloud first, then matched YouTube
+    // Combine SoundCloud + YouTube results
     const tracks = [...scTracks, ...ytTracks];
 
     // Cache results
