@@ -207,6 +207,9 @@ app.get('/api/search/external', async (req, res) => {
       const scData = await scRes.json();
       if (scData && Array.isArray(scData.collection)) {
         for (const item of scData.collection) {
+          const durationSec = Math.round((item.duration || 0) / 1000);
+          if (durationSec <= 35) continue; // Skip 30s clips
+
           const progressive = item.media?.transcodings?.find(t => t.format?.protocol === 'progressive');
           let audioUrl = null;
           if (progressive) {
@@ -227,7 +230,7 @@ app.get('/api/search/external', async (req, res) => {
               album: 'SoundCloud Single',
               cover: item.artwork_url ? item.artwork_url.replace('-large', '-t500x500') : (item.user?.avatar_url || 'https://images.unsplash.com/photo-1514525253161-7a46d19cd819?w=600'),
               audioUrl,
-              duration: Math.round((item.duration || 180000) / 1000),
+              duration: durationSec,
               genre: 'SoundCloud',
               source: 'SoundCloud',
               lyrics: findLyrics(title, artist)

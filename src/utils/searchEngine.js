@@ -1,9 +1,18 @@
 /**
- * Unified Resilient Music & Synced Lyrics Search Engine
- * Queries SoundCloud, iTunes, LrcLib Synced Lyrics, and Backend API with safe fallback handling
+ * Clean track title by removing extra info in parentheses or brackets
+ * e.g. "3alam Kadaba (From The TV Series...)" -> "3alam Kadaba"
  */
-
-import { API_BASE_URL } from '../config';
+const cleanSongTitle = (title) => {
+  if (!title) return '';
+  return title
+    .replace(/\(.*?\)/g, '')
+    .replace(/\[.*?\]/g, '')
+    .replace(/ft\..*$/i, '')
+    .replace(/feat\..*$/i, '')
+    .replace(/official audio/i, '')
+    .replace(/official video/i, '')
+    .trim();
+};
 
 const parseLrcLyrics = (lrcText) => {
   if (!lrcText || typeof lrcText !== 'string') return null;
@@ -29,15 +38,51 @@ const parseLrcLyrics = (lrcText) => {
 export const searchMusicOnline = async (searchQuery) => {
   if (!searchQuery || !searchQuery.trim()) return [];
 
-  const cleanQuery = searchQuery.trim();
+  const rawQuery = searchQuery.trim();
+  const cleanQ = cleanSongTitle(rawQuery);
   const results = [];
-  const addedTrackIds = new Set();
   const addedTitles = new Set();
 
-  // 1. Try LrcLib API for synced karaoke lyrics
+  const scClientId = 'emAJdGEj1mm9yjoCD2jkixmgqrGIyfpi';
+
+  // Helper to fetch SoundCloud full MP3 stream for artist & title
+  const fetchSCFullMp3 = async (artist, title) => {
+    try {
+      const cleanedT = cleanSongTitle(title);
+      const q = `${artist} ${cleanedT}`.trim();
+      const res = await fetch(`https://api-v2.soundcloud.com/search/tracks?q=${encodeURIComponent(q)}&client_id=${scClientId}&limit=5`);
+      if (res.ok) {
+        const data = await res.json();
+        if (data && Array.isArray(data.collection)) {
+          for (const item of data.collection) {
+            const durationSec = Math.round((item.duration || 0) / 1000);
+            if (durationSec <= 35) continue; // Skip 30s clips on SoundCloud too
+
+            const progressive = item.media?.transcodings?.find(t => t.format?.protocol === 'progressive');
+            if (progressive) {
+              const streamRes = await fetch(`${progressive.url}?client_id=${scClientId}`);
+              if (streamRes.ok) {
+                const streamData = await streamRes.json();
+                if (streamData.url) {
+                  return {
+                    url: streamData.url,
+                    duration: durationSec,
+                    cover: item.artwork_url ? item.artwork_url.replace('-large', '-t500x500') : (item.user?.avatar_url || '')
+                  };
+                }
+              }
+            }
+          }
+        }
+      }
+    } catch(e){}
+    return null;
+  };
+
+  // 1. Fetch Synced Lyrics from LrcLib
   let lrcTracks = [];
   try {
-    const lrcRes = await fetch(`https://lrclib.net/api/search?q=${encodeURIComponent(cleanQuery)}`);
+    const lrcRes = await fetch(`https://lrclib.net/api/search?q=${encodeURIComponent(cleanQ)}`);
     if (lrcRes.ok) {
       const lrcData = await lrcRes.json();
       if (Array.isArray(lrcData)) lrcTracks = lrcData;
@@ -45,10 +90,11 @@ export const searchMusicOnline = async (searchQuery) => {
   } catch(e) {}
 
   const getLyricsForSong = (songTitle, artistName) => {
+    const cleanT = cleanSongTitle(songTitle);
     let matchedLrc = lrcTracks.find((l) =>
-      l.trackName && songTitle &&
-      (l.trackName.toLowerCase().includes(songTitle.toLowerCase()) ||
-       songTitle.toLowerCase().includes(l.trackName.toLowerCase()))
+      l.trackName && cleanT &&
+      (l.trackName.toLowerCase().includes(cleanT.toLowerCase()) ||
+       cleanT.toLowerCase().includes(l.trackName.toLowerCase()))
     );
 
     if (matchedLrc && matchedLrc.syncedLyrics) {
@@ -68,15 +114,15 @@ export const searchMusicOnline = async (searchQuery) => {
 
   // 2. Try Backend API first if available
   try {
-    const backendRes = await fetch(`${API_BASE_URL}/api/search/external?q=${encodeURIComponent(cleanQuery)}`);
+    const backendRes = await fetch(`${API_BASE_URL}/api/search/external?q=${encodeURIComponent(cleanQ)}`);
     const contentType = backendRes.headers.get('content-type');
     if (backendRes.ok && contentType && contentType.includes('application/json')) {
       const data = await backendRes.json();
       if (data.success && Array.isArray(data.tracks) && data.tracks.length > 0) {
         for (const t of data.tracks) {
-          if (t.title && t.audioUrl) {
-            addedTrackIds.add(t.id);
-            addedTitles.add(t.title.toLowerCase());
+          const is30s = !t.audioUrl || t.audioUrl.includes('itunes.apple.com') || t.audioUrl.includes('apple-assets') || (t.duration && t.duration <= 35);
+          if (t.title && !is30s) {
+            addedTitles.add(cleanSongTitle(t.title).toLowerCase());
             results.push(t);
           }
         }
@@ -84,16 +130,19 @@ export const searchMusicOnline = async (searchQuery) => {
     }
   } catch(e) {}
 
-  // 3. SoundCloud Direct API Search
-  const scClientId = 'emAJdGEj1mm9yjoCD2jkixmgqrGIyfpi';
+  // 3. Direct SoundCloud API Search (Strictly Full Tracks > 35s)
   try {
-    const scRes = await fetch(`https://api-v2.soundcloud.com/search/tracks?q=${encodeURIComponent(cleanQuery)}&client_id=${scClientId}&limit=15`);
+    const scRes = await fetch(`https://api-v2.soundcloud.com/search/tracks?q=${encodeURIComponent(cleanQ)}&client_id=${scClientId}&limit=15`);
     if (scRes.ok) {
       const scData = await scRes.json();
       if (scData && Array.isArray(scData.collection)) {
         for (const item of scData.collection) {
-          const title = item.title || cleanQuery;
-          if (addedTitles.has(title.toLowerCase())) continue;
+          const durationSec = Math.round((item.duration || 0) / 1000);
+          if (durationSec <= 35) continue; // Skip 30s preview tracks
+
+          const title = item.title || cleanQ;
+          const cleanTitleKey = cleanSongTitle(title).toLowerCase();
+          if (addedTitles.has(cleanTitleKey)) continue;
 
           const progressive = item.media?.transcodings?.find(t => t.format?.protocol === 'progressive');
           let streamMp3Url = null;
@@ -111,7 +160,7 @@ export const searchMusicOnline = async (searchQuery) => {
             const artist = item.user?.username || 'SoundCloud Artist';
             const { lyrics, hasSynced } = getLyricsForSong(title, artist);
 
-            addedTitles.add(title.toLowerCase());
+            addedTitles.add(cleanTitleKey);
             results.push({
               id: `sc-${item.id}`,
               title,
@@ -119,7 +168,7 @@ export const searchMusicOnline = async (searchQuery) => {
               album: 'SoundCloud',
               cover: item.artwork_url ? item.artwork_url.replace('-large', '-t500x500') : (item.user?.avatar_url || 'https://images.unsplash.com/photo-1514525253161-7a46d19cd819?w=600'),
               audioUrl: streamMp3Url,
-              duration: Math.round((item.duration || 180000) / 1000),
+              duration: durationSec,
               genre: 'SoundCloud',
               source: 'SoundCloud',
               lyrics,
@@ -131,50 +180,33 @@ export const searchMusicOnline = async (searchQuery) => {
     }
   } catch(e) {}
 
-  // 4. iTunes Search API (100% CORS-Enabled Fallback)
+  // 4. iTunes Metadata + SoundCloud Stream Matcher (Never output 30s iTunes url!)
   try {
-    const itunesRes = await fetch(`https://itunes.apple.com/search?term=${encodeURIComponent(cleanQuery)}&media=music&limit=15`);
+    const itunesRes = await fetch(`https://itunes.apple.com/search?term=${encodeURIComponent(cleanQ)}&media=music&limit=15`);
     if (itunesRes.ok) {
       const itunesData = await itunesRes.json();
       if (itunesData && Array.isArray(itunesData.results)) {
         for (const item of itunesData.results) {
-          const title = item.trackName || item.collectionName || cleanQuery;
-          if (addedTitles.has(title.toLowerCase())) continue;
+          const rawTitle = item.trackName || item.collectionName || cleanQ;
+          const cleanTitleKey = cleanSongTitle(rawTitle).toLowerCase();
+          if (addedTitles.has(cleanTitleKey)) continue;
 
           const artist = item.artistName || 'Artist';
           const cover = item.artworkUrl100 ? item.artworkUrl100.replace('100x100bb', '600x600bb') : '';
-          const { lyrics, hasSynced } = getLyricsForSong(title, artist);
+          const { lyrics, hasSynced } = getLyricsForSong(rawTitle, artist);
 
-          // Resolve SoundCloud MP3 stream for iTunes item
-          let audioUrl = item.previewUrl;
-          try {
-            const scSearchRes = await fetch(`https://api-v2.soundcloud.com/search/tracks?q=${encodeURIComponent(artist + ' ' + title)}&client_id=${scClientId}&limit=1`);
-            if (scSearchRes.ok) {
-              const scSearchData = await scSearchRes.json();
-              if (scSearchData.collection && scSearchData.collection.length > 0) {
-                const scItem = scSearchData.collection[0];
-                const progressive = scItem.media?.transcodings?.find(t => t.format?.protocol === 'progressive');
-                if (progressive) {
-                  const streamRes = await fetch(`${progressive.url}?client_id=${scClientId}`);
-                  if (streamRes.ok) {
-                    const streamData = await streamRes.json();
-                    if (streamData.url) audioUrl = streamData.url;
-                  }
-                }
-              }
-            }
-          } catch(e){}
-
-          if (audioUrl) {
-            addedTitles.add(title.toLowerCase());
+          // Resolve full length MP3 stream from SoundCloud using clean title
+          const scMatch = await fetchSCFullMp3(artist, rawTitle);
+          if (scMatch && scMatch.url) {
+            addedTitles.add(cleanTitleKey);
             results.push({
               id: `ext-${item.trackId || Date.now()}-${Math.floor(Math.random() * 1000)}`,
-              title,
+              title: rawTitle,
               artist,
               album: item.collectionName || 'Single',
-              cover,
-              audioUrl,
-              duration: item.trackTimeMillis ? Math.round(item.trackTimeMillis / 1000) : 210,
+              cover: scMatch.cover || cover,
+              audioUrl: scMatch.url,
+              duration: scMatch.duration || Math.round((item.trackTimeMillis || 210000) / 1000),
               genre: item.primaryGenreName || 'Pop',
               source: 'Music',
               lyrics,
