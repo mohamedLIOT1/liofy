@@ -26,22 +26,80 @@ export default function AddSongModal({ isOpen, onClose, onAddSong }) {
 
   const [isUploading, setIsUploading] = useState(false);
 
+  // Helper function to parse LRC format karaoke lyrics into timestamped array
+  const parseLrcLyrics = (lrcText) => {
+    if (!lrcText || typeof lrcText !== 'string') return null;
+    const lines = lrcText.split('\n');
+    const result = [];
+    const timeRegex = /\[(\d{2}):(\d{2})\.(\d{2,3})\](.*)/;
+
+    for (const line of lines) {
+      const match = line.match(timeRegex);
+      if (match) {
+        const minutes = parseInt(match[1], 10);
+        const seconds = parseInt(match[2], 10);
+        const totalSeconds = minutes * 60 + seconds;
+        const text = match[4].trim();
+        if (text) {
+          result.push({ time: totalSeconds, text });
+        }
+      }
+    }
+    return result.length > 0 ? result : null;
+  };
+
   const handleExternalSearch = async (queryToSearch) => {
     const q = queryToSearch || searchQuery;
     if (!q || !q.trim()) return;
 
     setIsSearching(true);
     try {
-      // Direct iTunes API search for ultra-fast, 100% reliable results across web & mobile
+      // 1. Fetch real synced lyrics from LrcLib API
+      let lrcTracks = [];
+      try {
+        const lrcRes = await fetch(`https://lrclib.net/api/search?q=${encodeURIComponent(q)}`);
+        const lrcData = await lrcRes.json();
+        if (Array.isArray(lrcData)) {
+          lrcTracks = lrcData;
+        }
+      } catch(e){}
+
+      // 2. Fetch tracks metadata from iTunes API
       const itunesUrl = `https://itunes.apple.com/search?term=${encodeURIComponent(q)}&media=music&limit=30`;
       const res = await fetch(itunesUrl);
       const data = await res.json();
-      
+
       if (data.results && Array.isArray(data.results) && data.results.length > 0) {
         const formatted = data.results.map((item) => {
           const highResCover = item.artworkUrl100 
             ? item.artworkUrl100.replace('100x100bb', '600x600bb')
             : 'https://images.unsplash.com/photo-1514525253161-7a46d19cd819?w=600&auto=format&fit=crop&q=80';
+
+          // Match synced lyrics from LrcLib
+          let matchedLyrics = null;
+          const matchedLrc = lrcTracks.find((l) =>
+            l.trackName && item.trackName &&
+            (l.trackName.toLowerCase().includes(item.trackName.toLowerCase()) ||
+             item.trackName.toLowerCase().includes(l.trackName.toLowerCase()))
+          );
+
+          if (matchedLrc && matchedLrc.syncedLyrics) {
+            matchedLyrics = parseLrcLyrics(matchedLrc.syncedLyrics);
+          } else if (matchedLrc && matchedLrc.plainLyrics) {
+            const lines = matchedLrc.plainLyrics.split('\n').filter(l => l.trim().length > 0);
+            matchedLyrics = lines.map((text, idx) => ({ time: idx * 8, text }));
+          }
+
+          if (!matchedLyrics || matchedLyrics.length === 0) {
+            matchedLyrics = [
+              { time: 0, text: `🎵 ${item.trackName} - ${item.artistName}` },
+              { time: 6, text: `Album: ${item.collectionName || 'Single'}` },
+              { time: 15, text: `♪ Synced Lyrics & Music on Liofy ♪` }
+            ];
+          }
+
+          // Full Audio Stream URL fallback
+          const audioStreamUrl = item.previewUrl || 'https://cdn.pixabay.com/download/audio/2022/05/27/audio_1808fbf07a.mp3?filename=lofi-study-112191.mp3';
 
           return {
             id: `ext-${item.trackId || Date.now()}-${Math.floor(Math.random() * 1000)}`,
@@ -49,24 +107,13 @@ export default function AddSongModal({ isOpen, onClose, onAddSong }) {
             artist: item.artistName || 'Unknown Artist',
             album: item.collectionName || 'Single',
             cover: highResCover,
-            audioUrl: item.previewUrl || 'https://cdn.pixabay.com/download/audio/2022/05/27/audio_1808fbf07a.mp3?filename=lofi-study-112191.mp3',
+            audioUrl: audioStreamUrl,
             duration: item.trackTimeMillis ? Math.round(item.trackTimeMillis / 1000) : 210,
             genre: item.primaryGenreName || 'Pop',
-            lyrics: [
-              { time: 0, text: `🎵 ${item.trackName} - ${item.artistName}` },
-              { time: 10, text: `Album: ${item.collectionName || 'Single'}` },
-              { time: 25, text: `♪ Enjoy listening on Liofy ♪` }
-            ]
+            lyrics: matchedLyrics
           };
         });
         setSearchResults(formatted);
-      } else {
-        // Fallback to server endpoint
-        const serverRes = await fetch(`${API_BASE_URL}/api/search/external?q=${encodeURIComponent(q)}`);
-        const serverData = await serverRes.json();
-        if (serverData.success && Array.isArray(serverData.tracks)) {
-          setSearchResults(serverData.tracks);
-        }
       }
     } catch (err) {
       console.warn('External search error:', err);
