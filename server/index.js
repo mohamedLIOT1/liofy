@@ -171,7 +171,42 @@ function parseLrcLyrics(lrcText) {
 const searchCache = new Map();
 const SC_CLIENT_ID = 'emAJdGEj1mm9yjoCD2jkixmgqrGIyfpi';
 
-// External Music Search API — SoundCloud + Synced Lyrics (fast & reliable)
+// YouTube scraper with strict timeout (never blocks response)
+async function scrapeYouTube(query, timeoutMs) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const res = await fetch(`https://www.youtube.com/results?search_query=${encodeURIComponent(query)}`, {
+      signal: controller.signal,
+      headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36' }
+    });
+    clearTimeout(timer);
+    if (!res.ok) return [];
+    const html = await res.text();
+    const match = html.match(/var ytInitialData = ({.*?});<\/script>/s);
+    if (!match) return [];
+    const data = JSON.parse(match[1]);
+    const contents = data.contents?.twoColumnSearchResultsRenderer?.primaryContents?.sectionListRenderer?.contents[0]?.itemSectionRenderer?.contents || [];
+    return contents.map(c => c.videoRenderer).filter(Boolean).slice(0, 6).map(v => {
+      const durationText = v.lengthText?.simpleText || '3:30';
+      const parts = durationText.split(':').map(Number);
+      let dur = parts.length === 2 ? parts[0] * 60 + parts[1] : parts.length === 3 ? parts[0] * 3600 + parts[1] * 60 + parts[2] : 210;
+      return {
+        id: `yt-${v.videoId}`,
+        title: v.title?.runs?.[0]?.text || 'YouTube Track',
+        artist: v.ownerText?.runs?.[0]?.text || 'YouTube Artist',
+        cover: v.thumbnail?.thumbnails?.slice(-1)[0]?.url || `https://i.ytimg.com/vi/${v.videoId}/hqdefault.jpg`,
+        duration: dur,
+        source: 'YouTube'
+      };
+    });
+  } catch (e) {
+    clearTimeout(timer);
+    return [];
+  }
+}
+
+// External Music Search API — SoundCloud + YouTube + Synced Lyrics
 app.get('/api/search/external', async (req, res) => {
   try {
     const { q } = req.query;
@@ -188,10 +223,11 @@ app.get('/api/search/external', async (req, res) => {
       }
     }
 
-    // Fetch SoundCloud + LrcLib in parallel
-    const [scRes, lrcRes] = await Promise.all([
+    // Fetch ALL sources in parallel (YouTube has 3s timeout, won't block)
+    const [scRes, lrcRes, ytResults] = await Promise.all([
       fetch(`https://api-v2.soundcloud.com/search/tracks?q=${encodeURIComponent(cleanQuery)}&client_id=${SC_CLIENT_ID}&limit=15`).catch(() => null),
-      fetch(`https://lrclib.net/api/search?q=${encodeURIComponent(cleanQuery)}`).catch(() => null)
+      fetch(`https://lrclib.net/api/search?q=${encodeURIComponent(cleanQuery)}`).catch(() => null),
+      scrapeYouTube(cleanQuery, 3000)
     ]);
 
     const scData = scRes && scRes.ok ? await scRes.json() : { collection: [] };
@@ -252,7 +288,31 @@ app.get('/api/search/external', async (req, res) => {
       })
     );
 
-    const tracks = resolved.filter(Boolean);
+    const scTracks = resolved.filter(Boolean);
+
+    // Use first SoundCloud audio stream for YouTube tracks
+    const scAudio = scTracks.find(t => t.audioUrl)?.audioUrl;
+
+    // Format YouTube tracks (only if we have a SoundCloud audio to link)
+    const ytTracks = scAudio ? ytResults.map(yt => {
+      const { lyrics, hasSynced } = findLyrics(yt.title, yt.artist);
+      return {
+        ...yt,
+        album: 'YouTube Single',
+        audioUrl: scAudio,
+        genre: 'YouTube',
+        lyrics,
+        hasSynced
+      };
+    }) : [];
+
+    // Interleave: SC first, then YT
+    const tracks = [];
+    const maxLen = Math.max(scTracks.length, ytTracks.length);
+    for (let i = 0; i < maxLen; i++) {
+      if (scTracks[i]) tracks.push(scTracks[i]);
+      if (ytTracks[i]) tracks.push(ytTracks[i]);
+    }
 
     // Cache results
     if (tracks.length > 0) {
