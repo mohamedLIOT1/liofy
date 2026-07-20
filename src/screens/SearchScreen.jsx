@@ -1,74 +1,340 @@
 import React, { useState } from 'react';
-import { Search as SearchIcon, Play, Heart, Mic } from 'lucide-react';
+import { Search as SearchIcon, Play, Heart, Plus, Loader2, Sparkles } from 'lucide-react';
 import { GENRES } from '../data/musicData';
+import { API_BASE_URL } from '../config';
 
-export default function SearchScreen({ tracks, onSelectTrack, toggleLike }) {
+export default function SearchScreen({ tracks, onSelectTrack, toggleLike, onAddSong }) {
   const [query, setQuery] = useState('');
+  const [externalResults, setExternalResults] = useState([]);
+  const [isSearchingExternal, setIsSearchingExternal] = useState(false);
+  const [activeTab, setActiveTab] = useState('all'); // 'all' | 'local' | 'online'
 
-  const filteredTracks = tracks.filter((t) => 
+  const localFiltered = tracks.filter((t) => 
     t.title.toLowerCase().includes(query.toLowerCase()) ||
     t.artist.toLowerCase().includes(query.toLowerCase()) ||
-    t.genre.toLowerCase().includes(query.toLowerCase())
+    (t.genre && t.genre.toLowerCase().includes(query.toLowerCase()))
   );
+
+  const parseLrcLyrics = (lrcText) => {
+    if (!lrcText || typeof lrcText !== 'string') return null;
+    const lines = lrcText.split('\n');
+    const result = [];
+    const timeRegex = /\[(\d{2}):(\d{2})\.(\d{2,3})\](.*)/;
+
+    for (const line of lines) {
+      const match = line.match(timeRegex);
+      if (match) {
+        const minutes = parseInt(match[1], 10);
+        const seconds = parseInt(match[2], 10);
+        const totalSeconds = minutes * 60 + seconds;
+        const text = match[4].trim();
+        if (text) {
+          result.push({ time: totalSeconds, text });
+        }
+      }
+    }
+    return result.length > 0 ? result : null;
+  };
+
+  const handleSearchOnline = async (searchQ) => {
+    const q = searchQ || query;
+    if (!q || !q.trim()) return;
+
+    setIsSearchingExternal(true);
+    try {
+      const cleanQuery = q.trim();
+
+      // 1. LrcLib Synced Lyrics
+      let lrcTracks = [];
+      try {
+        const lrcRes = await fetch(`https://lrclib.net/api/search?q=${encodeURIComponent(cleanQuery)}`);
+        const lrcData = await lrcRes.json();
+        if (Array.isArray(lrcData)) lrcTracks = lrcData;
+      } catch(e){}
+
+      const getLyrics = (songTitle, artistName) => {
+        let matchedLrc = lrcTracks.find((l) =>
+          l.trackName && songTitle &&
+          (l.trackName.toLowerCase().includes(songTitle.toLowerCase()) ||
+           songTitle.toLowerCase().includes(l.trackName.toLowerCase()))
+        );
+
+        if (matchedLrc && matchedLrc.syncedLyrics) {
+          const parsed = parseLrcLyrics(matchedLrc.syncedLyrics);
+          if (parsed) return { lyrics: parsed, hasSynced: true };
+        }
+
+        return {
+          lyrics: [
+            { time: 0, text: `🎵 ${songTitle}` },
+            { time: 5, text: `Artist: ${artistName}` },
+            { time: 15, text: `♪ Full Audio & Synced Lyrics on Liofy ♪` }
+          ],
+          hasSynced: false
+        };
+      };
+
+      // 2. SoundCloud
+      let scTracks = [];
+      const scClientId = 'emAJdGEj1mm9yjoCD2jkixmgqrGIyfpi';
+      try {
+        const scRes = await fetch(`https://api-v2.soundcloud.com/search/tracks?q=${encodeURIComponent(cleanQuery)}&client_id=${scClientId}&limit=10`);
+        const scData = await scRes.json();
+        if (scData && Array.isArray(scData.collection)) {
+          for (const item of scData.collection) {
+            const progressive = item.media?.transcodings?.find(t => t.format?.protocol === 'progressive');
+            let streamMp3Url = null;
+            if (progressive) {
+              try {
+                const streamRes = await fetch(`${progressive.url}?client_id=${scClientId}`);
+                const streamData = await streamRes.json();
+                streamMp3Url = streamData.url;
+              } catch(e){}
+            }
+
+            if (streamMp3Url) {
+              const songTitle = item.title || cleanQuery;
+              const artistName = item.user?.username || 'SoundCloud Artist';
+              const { lyrics, hasSynced } = getLyrics(songTitle, artistName);
+              scTracks.push({
+                id: `sc-${item.id}`,
+                title: songTitle,
+                artist: artistName,
+                album: 'SoundCloud',
+                cover: item.artwork_url ? item.artwork_url.replace('-large', '-t500x500') : (item.user?.avatar_url || 'https://images.unsplash.com/photo-1514525253161-7a46d19cd819?w=600'),
+                audioUrl: streamMp3Url,
+                duration: Math.round((item.duration || 180000) / 1000),
+                genre: 'SoundCloud',
+                source: 'SoundCloud',
+                lyrics,
+                hasSynced
+              });
+            }
+          }
+        }
+      } catch(e){}
+
+      // 3. YouTube
+      let ytTracks = [];
+      try {
+        const ytRes = await fetch(`https://api.piped.private.coffee/search?q=${encodeURIComponent(cleanQuery)}&filter=music_songs`);
+        const ytData = await ytRes.json();
+        if (ytData && Array.isArray(ytData.items)) {
+          for (const video of ytData.items.slice(0, 10)) {
+            const videoId = video.url ? video.url.replace('/watch?v=', '') : '';
+            const songTitle = video.title || cleanQuery;
+            const artistName = video.uploaderName || 'YouTube Artist';
+            const { lyrics, hasSynced } = getLyrics(songTitle, artistName);
+            const thumb = video.thumbnail ? video.thumbnail.replace(/w120-h120/, 'w600-h600') : `https://i.ytimg.com/vi/${videoId}/hqdefault.jpg`;
+
+            const scMatch = scTracks.find(s => s.title.toLowerCase().includes(songTitle.toLowerCase()));
+            const audioUrl = scMatch ? scMatch.audioUrl : (scTracks[0] ? scTracks[0].audioUrl : '');
+
+            if (audioUrl) {
+              ytTracks.push({
+                id: `yt-${videoId || Math.random()}`,
+                videoId,
+                title: songTitle,
+                artist: artistName,
+                album: 'YouTube Music',
+                cover: thumb,
+                audioUrl,
+                duration: video.duration || 210,
+                genre: 'YouTube',
+                source: 'YouTube',
+                lyrics,
+                hasSynced
+              });
+            }
+          }
+        }
+      } catch(e){}
+
+      setExternalResults([...scTracks, ...ytTracks]);
+    } catch(err){}
+    setIsSearchingExternal(false);
+  };
+
+  const handlePlayOrAdd = (track) => {
+    if (onAddSong) {
+      onAddSong(track);
+    } else {
+      onSelectTrack(track);
+    }
+  };
 
   return (
     <div className="flex-1 overflow-y-auto p-4 md:p-8 pb-32">
-      {/* Header with Live Search Input */}
-      <div className="mb-8">
-        <h1 className="text-3xl font-extrabold text-white mb-4">Search</h1>
-        <div className="relative max-w-xl">
-          <SearchIcon className="absolute left-4 top-1/2 -translate-y-1/2 text-zinc-400" size={20} />
-          <input
-            type="text"
-            placeholder="What do you want to listen to?"
-            value={query}
-            onChange={(e) => setQuery(e.target.value)}
-            className="w-full bg-zinc-900 text-white placeholder-zinc-400 pl-12 pr-12 py-3.5 rounded-full border border-zinc-800 focus:outline-none focus:border-[#1DB954] text-sm font-semibold shadow-xl"
-          />
-          {query && (
-            <button
-              onClick={() => setQuery('')}
-              className="absolute right-4 top-1/2 -translate-y-1/2 text-xs font-bold text-zinc-400 hover:text-white"
-            >
-              Clear
-            </button>
-          )}
+      {/* Header with Search Input & Online Search Button */}
+      <div className="mb-6">
+        <h1 className="text-3xl font-extrabold text-white mb-4">البحث عن الأغاني والليركس</h1>
+        <div className="flex items-center gap-2 max-w-2xl">
+          <div className="relative flex-1">
+            <SearchIcon className="absolute left-4 top-1/2 -translate-y-1/2 text-zinc-400" size={20} />
+            <input
+              type="text"
+              placeholder="ابحث في قناتك وفي YouTube و SoundCloud (مثال: ليجي سي، البخت...)"
+              value={query}
+              onChange={(e) => setQuery(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') handleSearchOnline();
+              }}
+              className="w-full bg-zinc-900 text-white placeholder-zinc-400 pl-12 pr-12 py-3.5 rounded-full border border-zinc-800 focus:outline-none focus:border-[#1DB954] text-sm font-semibold shadow-xl"
+            />
+            {query && (
+              <button
+                onClick={() => {
+                  setQuery('');
+                  setExternalResults([]);
+                }}
+                className="absolute right-4 top-1/2 -translate-y-1/2 text-xs font-bold text-zinc-400 hover:text-white"
+              >
+                Clear
+              </button>
+            )}
+          </div>
+          <button
+            onClick={() => handleSearchOnline()}
+            disabled={isSearchingExternal}
+            className="py-3.5 px-5 bg-[#1DB954] hover:bg-[#1ed760] text-black font-extrabold text-xs rounded-full shadow-lg transition-transform active:scale-95 flex items-center gap-1.5 shrink-0"
+          >
+            {isSearchingExternal ? <Loader2 size={16} className="animate-spin" /> : <Sparkles size={16} />}
+            <span>بحث أونلاين</span>
+          </button>
         </div>
       </div>
 
+      {/* Tabs */}
+      {query && (
+        <div className="flex items-center gap-2 mb-6 border-b border-zinc-800 pb-3">
+          <button
+            onClick={() => setActiveTab('all')}
+            className={`px-4 py-1.5 rounded-full text-xs font-black transition-all ${
+              activeTab === 'all' ? 'bg-[#1DB954] text-black' : 'bg-zinc-900 text-zinc-400 hover:text-white'
+            }`}
+          >
+            الكل ({localFiltered.length + externalResults.length})
+          </button>
+          <button
+            onClick={() => setActiveTab('local')}
+            className={`px-4 py-1.5 rounded-full text-xs font-black transition-all ${
+              activeTab === 'local' ? 'bg-[#1DB954] text-black' : 'bg-zinc-900 text-zinc-400 hover:text-white'
+            }`}
+          >
+            مكتبتك ({localFiltered.length})
+          </button>
+          <button
+            onClick={() => {
+              setActiveTab('online');
+              if (externalResults.length === 0) handleSearchOnline();
+            }}
+            className={`px-4 py-1.5 rounded-full text-xs font-black transition-all ${
+              activeTab === 'online' ? 'bg-[#1DB954] text-black' : 'bg-zinc-900 text-zinc-400 hover:text-white'
+            }`}
+          >
+            YouTube & SoundCloud ({externalResults.length})
+          </button>
+        </div>
+      )}
+
       {/* Search Results */}
       {query ? (
-        <section className="mb-8">
-          <h2 className="text-xl font-bold text-white mb-4">Top Results ({filteredTracks.length})</h2>
-          {filteredTracks.length > 0 ? (
-            <div className="flex flex-col gap-2">
-              {filteredTracks.map((track) => (
-                <div
-                  key={track.id}
-                  onClick={() => onSelectTrack(track)}
-                  className="flex items-center gap-4 p-3 rounded-xl hover:bg-zinc-900/80 cursor-pointer group transition-colors border border-transparent hover:border-zinc-800"
-                >
-                  <img src={track.cover} alt={track.title} className="w-12 h-12 rounded-lg object-cover" />
-                  <div className="flex-1 truncate">
-                    <h4 className="text-sm font-bold text-white truncate group-hover:text-[#1DB954] transition-colors">{track.title}</h4>
-                    <p className="text-xs text-zinc-400 truncate">{track.artist} • {track.genre}</p>
-                  </div>
-                  <button 
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      toggleLike(track.id);
-                    }}
-                    className="p-2 text-zinc-400 hover:text-white"
+        <div className="flex flex-col gap-8 mb-8">
+          {/* Local Library Section */}
+          {(activeTab === 'all' || activeTab === 'local') && localFiltered.length > 0 && (
+            <section>
+              <h2 className="text-lg font-bold text-white mb-3 flex items-center gap-2">
+                <span>أغاني في مكتبتك</span>
+                <span className="text-xs text-[#1DB954] font-semibold">({localFiltered.length})</span>
+              </h2>
+              <div className="flex flex-col gap-2">
+                {localFiltered.map((track) => (
+                  <div
+                    key={track.id}
+                    onClick={() => onSelectTrack(track)}
+                    className="flex items-center gap-4 p-3 rounded-xl hover:bg-zinc-900/80 cursor-pointer group transition-colors border border-transparent hover:border-zinc-800"
                   >
-                    <Heart size={18} className={track.liked ? 'fill-[#1DB954] text-[#1DB954]' : ''} />
-                  </button>
-                </div>
-              ))}
-            </div>
-          ) : (
-            <div className="text-center py-16 text-zinc-500 font-medium">No songs found matching "{query}"</div>
+                    <img src={track.cover} alt={track.title} className="w-12 h-12 rounded-lg object-cover" />
+                    <div className="flex-1 truncate">
+                      <h4 className="text-sm font-bold text-white truncate group-hover:text-[#1DB954] transition-colors">{track.title}</h4>
+                      <p className="text-xs text-zinc-400 truncate">{track.artist} • {track.genre || 'Music'}</p>
+                    </div>
+                    <button 
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        toggleLike(track.id);
+                      }}
+                      className="p-2 text-zinc-400 hover:text-white"
+                    >
+                      <Heart size={18} className={track.liked ? 'fill-[#1DB954] text-[#1DB954]' : ''} />
+                    </button>
+                  </div>
+                ))}
+              </div>
+            </section>
           )}
-        </section>
+
+          {/* External YouTube & SoundCloud Section */}
+          {(activeTab === 'all' || activeTab === 'online') && (
+            <section>
+              <h2 className="text-lg font-bold text-white mb-3 flex items-center gap-2">
+                <span>نتائج YouTube و SoundCloud</span>
+                <span className="text-xs text-orange-400 font-semibold">({externalResults.length})</span>
+              </h2>
+              {isSearchingExternal ? (
+                <div className="py-12 flex flex-col items-center justify-center text-zinc-400 gap-2">
+                  <Loader2 size={28} className="animate-spin text-[#1DB954]" />
+                  <span className="text-xs font-semibold">جاري البحث عن أغاني كاملة وليركس لـ "{query}"...</span>
+                </div>
+              ) : externalResults.length > 0 ? (
+                <div className="flex flex-col gap-2">
+                  {externalResults.map((track) => (
+                    <div
+                      key={track.id}
+                      onClick={() => handlePlayOrAdd(track)}
+                      className="flex items-center justify-between p-3 rounded-xl bg-zinc-900/60 hover:bg-zinc-900 cursor-pointer group transition-all border border-zinc-800/60 gap-3"
+                    >
+                      <div className="flex items-center gap-3 min-w-0">
+                        <img src={track.cover} alt={track.title} className="w-12 h-12 rounded-lg object-cover shrink-0" />
+                        <div className="min-w-0">
+                          <h4 className="text-sm font-extrabold text-white truncate group-hover:text-[#1DB954] transition-colors">{track.title}</h4>
+                          <p className="text-xs text-zinc-400 truncate flex items-center gap-2 mt-0.5">
+                            <span>{track.artist}</span>
+                            <span className={`px-1.5 py-0.5 rounded text-[10px] font-black uppercase ${
+                              track.source === 'SoundCloud' ? 'bg-orange-500/20 text-orange-400 border border-orange-500/30' : 'bg-red-500/20 text-red-400 border border-red-500/30'
+                            }`}>
+                              {track.source || 'Music'}
+                            </span>
+                            {track.hasSynced && (
+                              <span className="px-1.5 py-0.5 rounded text-[10px] font-black bg-emerald-500/20 text-emerald-400 border border-emerald-500/30">
+                                🎵 الليركس
+                              </span>
+                            )}
+                          </p>
+                        </div>
+                      </div>
+
+                      <button
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          handlePlayOrAdd(track);
+                        }}
+                        className="px-3 py-1.5 bg-[#1DB954] hover:bg-[#1ed760] text-black font-black text-xs rounded-lg transition-all shrink-0 flex items-center gap-1 shadow-md"
+                      >
+                        <Play size={14} fill="black" />
+                        <span>تشغيل وإضافة</span>
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              ) : (
+                <div className="text-center py-8 text-zinc-500 text-xs font-medium">
+                  اضغط "بحث أونلاين" للبحث عن أغاني {query} من يوتيوب وساوند كلاود 🎵
+                </div>
+              )}
+            </section>
+          )}
+        </div>
       ) : (
         /* Genre Category Cards Grid */
         <section>
@@ -77,7 +343,10 @@ export default function SearchScreen({ tracks, onSelectTrack, toggleLike }) {
             {GENRES.map((g) => (
               <div
                 key={g.id}
-                onClick={() => setQuery(g.name)}
+                onClick={() => {
+                  setQuery(g.name);
+                  handleSearchOnline(g.name);
+                }}
                 style={{ backgroundColor: g.color }}
                 className="relative h-36 rounded-xl p-4 overflow-hidden cursor-pointer shadow-lg hover:scale-[1.02] transition-transform flex flex-col justify-between group"
               >

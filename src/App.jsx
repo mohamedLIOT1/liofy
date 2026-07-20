@@ -246,7 +246,7 @@ export default function App() {
     }
   }, [currentTrack]);
 
-  // Automatic Full Audio Upgrader for 30s preview tracks
+  // Automatic Full Audio Upgrader for 30s preview tracks via SoundCloud
   useEffect(() => {
     if (!currentTrack || !currentTrack.audioUrl) return;
     const is30sPreview = currentTrack.audioUrl.includes('itunes.apple.com') || currentTrack.audioUrl.includes('apple.com') || (currentTrack.duration && currentTrack.duration <= 35);
@@ -254,17 +254,23 @@ export default function App() {
     if (is30sPreview) {
       const upgradeAudioToFullLength = async () => {
         try {
+          const scClientId = 'emAJdGEj1mm9yjoCD2jkixmgqrGIyfpi';
           const query = `${currentTrack.artist} ${currentTrack.title}`;
-          const res = await fetch(`https://inv.tux.pizza/api/v1/search?q=${encodeURIComponent(query)}&type=video`);
+          const res = await fetch(`https://api-v2.soundcloud.com/search/tracks?q=${encodeURIComponent(query)}&client_id=${scClientId}&limit=1`);
           const data = await res.json();
-          if (Array.isArray(data) && data.length > 0) {
-            const topMatch = data[0];
-            if (topMatch && topMatch.videoId) {
-              const fullAudioUrl = `https://inv.tux.pizza/latest_version?id=${topMatch.videoId}&itag=140`;
-              const fullDuration = topMatch.lengthSeconds || 210;
+          if (data && data.collection && data.collection.length > 0) {
+            const scItem = data.collection[0];
+            const progressive = scItem.media?.transcodings?.find(t => t.format?.protocol === 'progressive');
+            if (progressive) {
+              const streamRes = await fetch(`${progressive.url}?client_id=${scClientId}`);
+              const streamData = await streamRes.json();
+              if (streamData.url) {
+                const fullAudioUrl = streamData.url;
+                const fullDuration = Math.round((scItem.duration || 180000) / 1000);
 
-              setCurrentTrack((prev) => (prev && prev.id === currentTrack.id ? { ...prev, audioUrl: fullAudioUrl, duration: fullDuration } : prev));
-              setTracks((prev) => prev.map((t) => (t.id === currentTrack.id ? { ...t, audioUrl: fullAudioUrl, duration: fullDuration } : t)));
+                setCurrentTrack((prev) => (prev && prev.id === currentTrack.id ? { ...prev, audioUrl: fullAudioUrl, duration: fullDuration } : prev));
+                setTracks((prev) => prev.map((t) => (t.id === currentTrack.id ? { ...t, audioUrl: fullAudioUrl, duration: fullDuration } : t)));
+              }
             }
           }
         } catch (err) {
@@ -596,6 +602,7 @@ export default function App() {
             tracks={tracks}
             onSelectTrack={playTrack}
             toggleLike={toggleLike}
+            onAddSong={handleAddSong}
           />
         )}
 

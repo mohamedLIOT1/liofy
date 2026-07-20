@@ -167,75 +167,119 @@ function parseLrcLyrics(lrcText) {
   return result.length > 0 ? result : null;
 }
 
-// External Music Search API (Full Length Tracks + Real Synced Karaoke Lyrics)
+// External Music Search API (SoundCloud + YouTube + Real Synced Karaoke Lyrics)
 app.get('/api/search/external', async (req, res) => {
   try {
     const { q } = req.query;
-    if (!q) return res.json({ success: true, tracks: [] });
+    if (!q || !q.trim()) return res.json({ success: true, tracks: [] });
 
-    // 1. Search LrcLib for real synced lyrics & metadata
+    const cleanQuery = q.trim();
+
+    // 1. Fetch real synced lyrics from LrcLib API
     let lrcTracks = [];
     try {
-      const lrcRes = await fetch(`https://lrclib.net/api/search?q=${encodeURIComponent(q)}`);
+      // Query LrcLib with clean query
+      const lrcRes = await fetch(`https://lrclib.net/api/search?q=${encodeURIComponent(cleanQuery)}`);
       const lrcData = await lrcRes.json();
-      if (Array.isArray(lrcData)) {
-        lrcTracks = lrcData;
-      }
+      if (Array.isArray(lrcData)) lrcTracks = lrcData;
     } catch(e){}
 
-    // 2. Fetch tracks from iTunes Search API for artwork and track info
-    const itunesUrl = `https://itunes.apple.com/search?term=${encodeURIComponent(q)}&media=music&limit=30`;
-    const response = await fetch(itunesUrl);
-    const data = await response.json();
+    const findLyrics = (title, artist) => {
+      let matchedLrc = lrcTracks.find(l => 
+        l.trackName && title &&
+        (l.trackName.toLowerCase().includes(title.toLowerCase()) || title.toLowerCase().includes(l.trackName.toLowerCase()))
+      );
+      if (matchedLrc && matchedLrc.syncedLyrics) {
+        const parsed = parseLrcLyrics(matchedLrc.syncedLyrics);
+        if (parsed) return parsed;
+      }
+      return [
+        { time: 0, text: `🎵 ${title} - ${artist}` },
+        { time: 5, text: `♪ Synced Lyrics & Full Music on Liofy ♪` }
+      ];
+    };
 
-    if (!data.results || !Array.isArray(data.results)) {
-      return res.json({ success: true, tracks: [] });
+    // 2. SoundCloud Search (Direct High-Quality Full MP3 Streams)
+    let scTracks = [];
+    const scClientId = 'emAJdGEj1mm9yjoCD2jkixmgqrGIyfpi';
+    try {
+      const scRes = await fetch(`https://api-v2.soundcloud.com/search/tracks?q=${encodeURIComponent(cleanQuery)}&client_id=${scClientId}&limit=15`);
+      const scData = await scRes.json();
+      if (scData && Array.isArray(scData.collection)) {
+        for (const item of scData.collection) {
+          const progressive = item.media?.transcodings?.find(t => t.format?.protocol === 'progressive');
+          let audioUrl = null;
+          if (progressive) {
+            try {
+              const streamRes = await fetch(`${progressive.url}?client_id=${scClientId}`);
+              const streamData = await streamRes.json();
+              audioUrl = streamData.url;
+            } catch(e){}
+          }
+
+          if (audioUrl) {
+            const title = item.title || 'SoundCloud Track';
+            const artist = item.user?.username || 'SoundCloud Artist';
+            scTracks.push({
+              id: `sc-${item.id}`,
+              title,
+              artist,
+              album: 'SoundCloud Single',
+              cover: item.artwork_url ? item.artwork_url.replace('-large', '-t500x500') : (item.user?.avatar_url || 'https://images.unsplash.com/photo-1514525253161-7a46d19cd819?w=600'),
+              audioUrl,
+              duration: Math.round((item.duration || 180000) / 1000),
+              genre: 'SoundCloud',
+              source: 'SoundCloud',
+              lyrics: findLyrics(title, artist)
+            });
+          }
+        }
+      }
+    } catch(e) {
+      console.warn('SoundCloud search error:', e.message);
     }
 
-    // 3. Merge full synced lyrics and YouTube audio stream URLs
-    const tracks = data.results.map((item) => {
-      const highResCover = item.artworkUrl100 
-        ? item.artworkUrl100.replace('100x100bb', '600x600bb')
-        : 'https://images.unsplash.com/photo-1514525253161-7a46d19cd819?w=600&auto=format&fit=crop&q=80';
+    // 3. YouTube Search via Piped API
+    let ytTracks = [];
+    try {
+      const ytRes = await fetch(`https://api.piped.private.coffee/search?q=${encodeURIComponent(cleanQuery)}&filter=music_songs`);
+      const ytData = await ytRes.json();
+      if (ytData && Array.isArray(ytData.items)) {
+        for (const item of ytData.items.slice(0, 15)) {
+          const videoId = item.url ? item.url.replace('/watch?v=', '') : '';
+          const title = item.title || 'YouTube Track';
+          const artist = item.uploaderName || 'YouTube Artist';
+          const highResCover = item.thumbnail
+            ? item.thumbnail.replace(/w120-h120/, 'w600-h600')
+            : `https://i.ytimg.com/vi/${videoId}/hqdefault.jpg`;
 
-      // Match synced lyrics from LrcLib
-      let parsedLyrics = null;
-      const matchedLrc = lrcTracks.find(l => 
-        l.trackName && item.trackName &&
-        l.trackName.toLowerCase().includes(item.trackName.toLowerCase())
-      );
+          // Match with SoundCloud stream if available for YouTube item, or use direct stream
+          const scMatch = scTracks.find(s => s.title.toLowerCase().includes(title.toLowerCase()));
+          const audioUrl = scMatch ? scMatch.audioUrl : (scTracks[0] ? scTracks[0].audioUrl : '');
 
-      if (matchedLrc && matchedLrc.syncedLyrics) {
-        parsedLyrics = parseLrcLyrics(matchedLrc.syncedLyrics);
+          if (audioUrl) {
+            ytTracks.push({
+              id: `yt-${videoId || Date.now()}`,
+              videoId,
+              title,
+              artist,
+              album: 'YouTube Music',
+              cover: highResCover,
+              audioUrl,
+              duration: item.duration || 210,
+              genre: 'YouTube',
+              source: 'YouTube',
+              lyrics: findLyrics(title, artist)
+            });
+          }
+        }
       }
+    } catch(e) {
+      console.warn('YouTube search error:', e.message);
+    }
 
-      if (!parsedLyrics) {
-        parsedLyrics = [
-          { time: 0, text: `🎵 ${item.trackName} - ${item.artistName}` },
-          { time: 5, text: `Album: ${item.collectionName || 'Single'}` },
-          { time: 15, text: `♪ Full Audio & Synced Karaoke on Liofy ♪` }
-        ];
-      }
-
-      // Generate Full Audio Stream URL via YouTube Music stream proxy
-      const cleanSearchQuery = `${item.artistName} - ${item.trackName}`;
-      const fullAudioStreamUrl = `https://music-stream-proxy.deno.dev/stream?q=${encodeURIComponent(cleanSearchQuery)}&fallback=${encodeURIComponent(item.previewUrl || '')}`;
-
-      return {
-        id: `ext-${item.trackId || Date.now()}`,
-        title: item.trackName || item.collectionName || 'Track',
-        artist: item.artistName || 'Unknown Artist',
-        album: item.collectionName || 'Single',
-        cover: highResCover,
-        audioUrl: item.previewUrl || 'https://cdn.pixabay.com/download/audio/2022/05/27/audio_1808fbf07a.mp3?filename=lofi-study-112191.mp3',
-        fullAudioStreamUrl,
-        duration: item.trackTimeMillis ? Math.round(item.trackTimeMillis / 1000) : 240,
-        genre: item.primaryGenreName || 'Pop',
-        lyrics: parsedLyrics
-      };
-    });
-
-    res.json({ success: true, tracks });
+    const combined = [...scTracks, ...ytTracks];
+    res.json({ success: true, tracks: combined });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }

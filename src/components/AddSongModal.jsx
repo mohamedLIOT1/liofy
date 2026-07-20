@@ -8,6 +8,7 @@ export default function AddSongModal({ isOpen, onClose, onAddSong }) {
   const [searchResults, setSearchResults] = useState([]);
   const [isSearching, setIsSearching] = useState(false);
   const [addedTrackIds, setAddedTrackIds] = useState(new Set());
+  const [searchSourceFilter, setSearchSourceFilter] = useState('all'); // 'all' | 'soundcloud' | 'youtube'
 
   const [title, setTitle] = useState('');
   const [artist, setArtist] = useState('');
@@ -54,115 +55,126 @@ export default function AddSongModal({ isOpen, onClose, onAddSong }) {
 
     setIsSearching(true);
     try {
+      const cleanQuery = q.trim();
+
       // 1. Fetch real synced lyrics from LrcLib API
       let lrcTracks = [];
       try {
-        const lrcRes = await fetch(`https://lrclib.net/api/search?q=${encodeURIComponent(q)}`);
+        const lrcRes = await fetch(`https://lrclib.net/api/search?q=${encodeURIComponent(cleanQuery)}`);
         const lrcData = await lrcRes.json();
         if (Array.isArray(lrcData)) lrcTracks = lrcData;
       } catch(e){}
 
-      // 2. Query YouTube directly via Invidious for full 3-5 minute audio streams
+      const getLyricsForSong = (songTitle, artistName) => {
+        let matchedLrc = lrcTracks.find((l) =>
+          l.trackName && songTitle &&
+          (l.trackName.toLowerCase().includes(songTitle.toLowerCase()) ||
+           songTitle.toLowerCase().includes(l.trackName.toLowerCase()))
+        );
+
+        if (matchedLrc && matchedLrc.syncedLyrics) {
+          const parsed = parseLrcLyrics(matchedLrc.syncedLyrics);
+          if (parsed) return { lyrics: parsed, hasSynced: true };
+        }
+
+        return {
+          lyrics: [
+            { time: 0, text: `🎵 ${songTitle}` },
+            { time: 5, text: `Artist: ${artistName}` },
+            { time: 15, text: `♪ Full Audio & Synced Karaoke on Liofy ♪` }
+          ],
+          hasSynced: false
+        };
+      };
+
+      // 2. SoundCloud Search (Direct High Quality MP3 Streams)
+      let scTracks = [];
+      const scClientId = 'emAJdGEj1mm9yjoCD2jkixmgqrGIyfpi';
+      try {
+        const scRes = await fetch(`https://api-v2.soundcloud.com/search/tracks?q=${encodeURIComponent(cleanQuery)}&client_id=${scClientId}&limit=12`);
+        const scData = await scRes.json();
+
+        if (scData && Array.isArray(scData.collection)) {
+          for (const item of scData.collection) {
+            const progressive = item.media?.transcodings?.find(t => t.format?.protocol === 'progressive');
+            let streamMp3Url = null;
+            if (progressive) {
+              try {
+                const streamRes = await fetch(`${progressive.url}?client_id=${scClientId}`);
+                const streamData = await streamRes.json();
+                streamMp3Url = streamData.url;
+              } catch(e){}
+            }
+
+            if (streamMp3Url) {
+              const songTitle = item.title || cleanQuery;
+              const artistName = item.user?.username || 'SoundCloud Artist';
+              const { lyrics, hasSynced } = getLyricsForSong(songTitle, artistName);
+
+              scTracks.push({
+                id: `sc-${item.id}`,
+                title: songTitle,
+                artist: artistName,
+                album: 'SoundCloud',
+                cover: item.artwork_url ? item.artwork_url.replace('-large', '-t500x500') : (item.user?.avatar_url || 'https://images.unsplash.com/photo-1514525253161-7a46d19cd819?w=600&auto=format&fit=crop&q=80'),
+                audioUrl: streamMp3Url,
+                duration: Math.round((item.duration || 180000) / 1000),
+                genre: 'SoundCloud',
+                source: 'SoundCloud',
+                lyrics,
+                hasSynced
+              });
+            }
+          }
+        }
+      } catch(e) {
+        console.warn('SoundCloud search:', e);
+      }
+
+      // 3. YouTube Search via Piped API
       let ytTracks = [];
       try {
-        const ytRes = await fetch(`https://inv.tux.pizza/api/v1/search?q=${encodeURIComponent(q)}&type=video`);
+        const ytRes = await fetch(`https://api.piped.private.coffee/search?q=${encodeURIComponent(cleanQuery)}&filter=music_songs`);
         const ytData = await ytRes.json();
-        if (Array.isArray(ytData)) {
-          ytTracks = ytData.slice(0, 15).map((video) => {
-            const thumb = video.videoThumbnails && video.videoThumbnails.length > 0 
-              ? video.videoThumbnails[video.videoThumbnails.length - 1].url
-              : 'https://images.unsplash.com/photo-1514525253161-7a46d19cd819?w=600&auto=format&fit=crop&q=80';
 
-            // Match synced lyrics from LrcLib
-            let matchedLyrics = null;
-            const matchedLrc = lrcTracks.find((l) =>
-              l.trackName && video.title &&
-              (l.trackName.toLowerCase().includes(video.title.toLowerCase()) ||
-               video.title.toLowerCase().includes(l.trackName.toLowerCase()))
-            );
+        if (ytData && Array.isArray(ytData.items)) {
+          for (const video of ytData.items.slice(0, 12)) {
+            const videoId = video.url ? video.url.replace('/watch?v=', '') : '';
+            const songTitle = video.title || cleanQuery;
+            const artistName = video.uploaderName || 'YouTube Artist';
+            const { lyrics, hasSynced } = getLyricsForSong(songTitle, artistName);
 
-            if (matchedLrc && matchedLrc.syncedLyrics) {
-              matchedLyrics = parseLrcLyrics(matchedLrc.syncedLyrics);
+            const thumb = video.thumbnail
+              ? video.thumbnail.replace(/w120-h120/, 'w600-h600')
+              : `https://i.ytimg.com/vi/${videoId}/hqdefault.jpg`;
+
+            // Mapped soundcloud audio or fallback stream
+            const scMatch = scTracks.find(s => s.title.toLowerCase().includes(songTitle.toLowerCase()));
+            const audioUrl = scMatch ? scMatch.audioUrl : (scTracks[0] ? scTracks[0].audioUrl : '');
+
+            if (audioUrl) {
+              ytTracks.push({
+                id: `yt-${videoId || Math.random()}`,
+                videoId,
+                title: songTitle,
+                artist: artistName,
+                album: 'YouTube Music',
+                cover: thumb,
+                audioUrl,
+                duration: video.duration || 210,
+                genre: 'YouTube',
+                source: 'YouTube',
+                lyrics,
+                hasSynced
+              });
             }
-
-            if (!matchedLyrics) {
-              matchedLyrics = [
-                { time: 0, text: `🎵 ${video.title}` },
-                { time: 5, text: `Artist: ${video.author}` },
-                { time: 15, text: `♪ Full YouTube Audio on Liofy ♪` }
-              ];
-            }
-
-            return {
-              id: `yt-${video.videoId}`,
-              title: video.title,
-              artist: video.author || q,
-              album: 'YouTube Full Track',
-              cover: thumb,
-              audioUrl: `https://inv.tux.pizza/latest_version?id=${video.videoId}&itag=140`,
-              duration: video.lengthSeconds || 240,
-              genre: 'Music',
-              lyrics: matchedLyrics
-            };
-          });
+          }
         }
-      } catch(e){
-        console.warn('YouTube search fallback:', e);
+      } catch(e) {
+        console.warn('YouTube search:', e);
       }
 
-      // 3. Query iTunes API for official album metadata & map to full YouTube audio streams
-      const itunesUrl = `https://itunes.apple.com/search?term=${encodeURIComponent(q)}&media=music&limit=15`;
-      const res = await fetch(itunesUrl);
-      const data = await res.json();
-
-      let itunesTracks = [];
-      if (data.results && Array.isArray(data.results)) {
-        itunesTracks = data.results.map((item) => {
-          const highResCover = item.artworkUrl100 
-            ? item.artworkUrl100.replace('100x100bb', '600x600bb')
-            : 'https://images.unsplash.com/photo-1514525253161-7a46d19cd819?w=600&auto=format&fit=crop&q=80';
-
-          let matchedLyrics = null;
-          const matchedLrc = lrcTracks.find((l) =>
-            l.trackName && item.trackName &&
-            (l.trackName.toLowerCase().includes(item.trackName.toLowerCase()) ||
-             item.trackName.toLowerCase().includes(l.trackName.toLowerCase()))
-          );
-
-          if (matchedLrc && matchedLrc.syncedLyrics) {
-            matchedLyrics = parseLrcLyrics(matchedLrc.syncedLyrics);
-          }
-
-          if (!matchedLyrics) {
-            matchedLyrics = [
-              { time: 0, text: `🎵 ${item.trackName} - ${item.artistName}` },
-              { time: 6, text: `Album: ${item.collectionName || 'Single'}` },
-              { time: 15, text: `♪ Synced Lyrics & Full Music on Liofy ♪` }
-            ];
-          }
-
-          // Match with corresponding YouTube full audio stream
-          const ytMatch = ytTracks.find(y => 
-            y.title.toLowerCase().includes(item.trackName.toLowerCase())
-          );
-          const fullAudioUrl = ytMatch ? ytMatch.audioUrl : (ytTracks[0] ? ytTracks[0].audioUrl : 'https://cdn.pixabay.com/download/audio/2022/05/27/audio_1808fbf07a.mp3?filename=lofi-study-112191.mp3');
-
-          return {
-            id: `ext-${item.trackId || Date.now()}-${Math.floor(Math.random() * 1000)}`,
-            title: item.trackName || item.collectionName || 'Track',
-            artist: item.artistName || 'Unknown Artist',
-            album: item.collectionName || 'Single',
-            cover: highResCover,
-            audioUrl: fullAudioUrl,
-            duration: item.trackTimeMillis ? Math.round(item.trackTimeMillis / 1000) : 210,
-            genre: item.primaryGenreName || 'Pop',
-            lyrics: matchedLyrics
-          };
-        });
-      }
-
-      // Combine YouTube tracks first (full 3-5m duration) then iTunes mapped tracks
-      const combined = ytTracks.length > 0 ? [...ytTracks, ...itunesTracks] : itunesTracks;
+      const combined = [...scTracks, ...ytTracks];
       setSearchResults(combined);
     } catch (err) {
       console.warn('External search error:', err);
@@ -170,36 +182,15 @@ export default function AddSongModal({ isOpen, onClose, onAddSong }) {
     setIsSearching(false);
   };
 
-  const fetchFullAudioStream = async (artist, title, fallbackUrl) => {
-    try {
-      const query = `${artist} ${title}`;
-      const invRes = await fetch(`https://inv.tux.pizza/api/v1/search?q=${encodeURIComponent(query)}&type=video`);
-      const invData = await invRes.json();
-      if (Array.isArray(invData) && invData.length > 0) {
-        const topMatch = invData[0];
-        if (topMatch && topMatch.videoId) {
-          return `https://inv.tux.pizza/latest_version?id=${topMatch.videoId}&itag=140`;
-        }
-      }
-    } catch (err) {
-      console.warn('Full audio stream fetch error:', err);
-    }
-    return fallbackUrl;
-  };
-
   const handleAddExternalTrack = async (track) => {
     if (addedTrackIds.has(track.id)) return;
 
     setAddedTrackIds((prev) => new Set(prev).add(track.id));
 
-    // Resolve full 3-5 minute audio stream
-    const fullAudioUrl = await fetchFullAudioStream(track.artist, track.title, track.audioUrl);
-
     const newTrack = {
       ...track,
       id: `track-${Date.now()}-${Math.floor(Math.random() * 1000)}`,
-      audioUrl: fullAudioUrl,
-      plays: "5,400",
+      plays: "12,400",
       liked: true,
       downloaded: true
     };
@@ -380,22 +371,56 @@ export default function AddSongModal({ isOpen, onClose, onAddSong }) {
               </button>
             </div>
 
-            {/* Quick Suggestions Chips */}
-            <div className="flex items-center gap-1.5 overflow-x-auto pb-1 text-xs">
-              <span className="text-zinc-500 text-[11px] shrink-0">مقترحات:</span>
-              {['ليجي سي', 'ويجز', 'مروان بابلو', 'The Weeknd', 'Drake', 'Travis Scott'].map((artistName) => (
+            {/* Quick Suggestions Chips & Source Filter */}
+            <div className="flex flex-col gap-2">
+              <div className="flex items-center gap-1.5 overflow-x-auto pb-1 text-xs">
+                <span className="text-zinc-500 text-[11px] shrink-0">مقترحات:</span>
+                {['ليجي سي', 'ويجز', 'مروان بابلو', 'The Weeknd', 'Drake', 'Travis Scott'].map((artistName) => (
+                  <button
+                    key={artistName}
+                    type="button"
+                    onClick={() => {
+                      setSearchQuery(artistName);
+                      handleExternalSearch(artistName);
+                    }}
+                    className="px-2.5 py-1 rounded-full bg-zinc-900 hover:bg-zinc-800 border border-zinc-800 text-zinc-300 font-semibold shrink-0 text-[11px]"
+                  >
+                    {artistName}
+                  </button>
+                ))}
+              </div>
+
+              {/* Platform Filter Buttons */}
+              <div className="flex items-center gap-2 border-b border-zinc-800 pb-2">
+                <span className="text-zinc-400 text-xs font-bold">المصدر:</span>
                 <button
-                  key={artistName}
                   type="button"
-                  onClick={() => {
-                    setSearchQuery(artistName);
-                    handleExternalSearch(artistName);
-                  }}
-                  className="px-2.5 py-1 rounded-full bg-zinc-900 hover:bg-zinc-800 border border-zinc-800 text-zinc-300 font-semibold shrink-0 text-[11px]"
+                  onClick={() => setSearchSourceFilter('all')}
+                  className={`px-3 py-1 rounded-lg text-xs font-extrabold transition-all ${
+                    searchSourceFilter === 'all' ? 'bg-[#1DB954] text-black' : 'bg-zinc-900 text-zinc-400 hover:text-white'
+                  }`}
                 >
-                  {artistName}
+                  🌐 الكل
                 </button>
-              ))}
+                <button
+                  type="button"
+                  onClick={() => setSearchSourceFilter('soundcloud')}
+                  className={`px-3 py-1 rounded-lg text-xs font-extrabold transition-all ${
+                    searchSourceFilter === 'soundcloud' ? 'bg-orange-500 text-white' : 'bg-zinc-900 text-zinc-400 hover:text-white'
+                  }`}
+                >
+                  🟠 SoundCloud
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setSearchSourceFilter('youtube')}
+                  className={`px-3 py-1 rounded-lg text-xs font-extrabold transition-all ${
+                    searchSourceFilter === 'youtube' ? 'bg-red-600 text-white' : 'bg-zinc-900 text-zinc-400 hover:text-white'
+                  }`}
+                >
+                  🔴 YouTube
+                </button>
+              </div>
             </div>
 
             {/* Results Grid */}
@@ -403,57 +428,75 @@ export default function AddSongModal({ isOpen, onClose, onAddSong }) {
               {isSearching ? (
                 <div className="py-12 flex flex-col items-center justify-center text-zinc-400 gap-2">
                   <Loader2 size={28} className="animate-spin text-[#1DB954]" />
-                  <span className="text-xs font-extrabold">جاري البحث عن أغاني وألبومات {searchQuery}...</span>
+                  <span className="text-xs font-extrabold">جاري البحث على YouTube و SoundCloud...</span>
                 </div>
               ) : searchResults.length > 0 ? (
-                searchResults.map((t) => {
-                  const isAdded = addedTrackIds.has(t.id);
-                  return (
-                    <div
-                      key={t.id}
-                      className="flex items-center justify-between bg-zinc-900/80 hover:bg-zinc-800/80 p-3 rounded-2xl border border-zinc-800 transition-all gap-3"
-                    >
-                      <div className="flex items-center gap-3 min-w-0">
-                        <img
-                          src={t.cover}
-                          alt={t.title}
-                          className="w-12 h-12 rounded-xl object-cover border border-zinc-700/50 shrink-0"
-                        />
-                        <div className="min-w-0">
-                          <h4 className="text-sm font-extrabold text-white truncate">{t.title}</h4>
-                          <p className="text-xs text-zinc-400 truncate">{t.artist} • <span className="text-zinc-500">{t.album}</span></p>
-                        </div>
-                      </div>
-
-                      {/* Single simple "إضافة" button */}
-                      <button
-                        type="button"
-                        onClick={() => handleAddExternalTrack(t)}
-                        disabled={isAdded}
-                        className={`px-4 py-2 rounded-xl font-black text-xs transition-all shrink-0 flex items-center gap-1 ${
-                          isAdded
-                            ? 'bg-zinc-800 text-emerald-400 border border-emerald-500/30 cursor-default'
-                            : 'bg-[#1DB954] hover:bg-[#1ed760] text-black shadow-lg active:scale-95'
-                        }`}
+                searchResults
+                  .filter((t) => {
+                    if (searchSourceFilter === 'soundcloud') return t.source === 'SoundCloud';
+                    if (searchSourceFilter === 'youtube') return t.source === 'YouTube';
+                    return true;
+                  })
+                  .map((t) => {
+                    const isAdded = addedTrackIds.has(t.id);
+                    return (
+                      <div
+                        key={t.id}
+                        className="flex items-center justify-between bg-zinc-900/80 hover:bg-zinc-800/80 p-3 rounded-2xl border border-zinc-800 transition-all gap-3"
                       >
-                        {isAdded ? (
-                          <>
-                            <Check size={15} />
-                            <span>تمت الإضافة</span>
-                          </>
-                        ) : (
-                          <>
-                            <Plus size={15} />
-                            <span>إضافة</span>
-                          </>
-                        )}
-                      </button>
-                    </div>
-                  );
-                })
+                        <div className="flex items-center gap-3 min-w-0">
+                          <img
+                            src={t.cover}
+                            alt={t.title}
+                            className="w-12 h-12 rounded-xl object-cover border border-zinc-700/50 shrink-0"
+                          />
+                          <div className="min-w-0">
+                            <h4 className="text-sm font-extrabold text-white truncate">{t.title}</h4>
+                            <p className="text-xs text-zinc-400 truncate flex items-center gap-2 mt-0.5">
+                              <span>{t.artist}</span>
+                              <span className={`px-1.5 py-0.5 rounded text-[10px] font-black uppercase ${
+                                t.source === 'SoundCloud' ? 'bg-orange-500/20 text-orange-400 border border-orange-500/30' : 'bg-red-500/20 text-red-400 border border-red-500/30'
+                              }`}>
+                                {t.source || 'Music'}
+                              </span>
+                              {t.hasSynced && (
+                                <span className="px-1.5 py-0.5 rounded text-[10px] font-black bg-emerald-500/20 text-emerald-400 border border-emerald-500/30 flex items-center gap-1">
+                                  <span>🎵 الليركس</span>
+                                </span>
+                              )}
+                            </p>
+                          </div>
+                        </div>
+
+                        {/* Single simple "إضافة" button */}
+                        <button
+                          type="button"
+                          onClick={() => handleAddExternalTrack(t)}
+                          disabled={isAdded}
+                          className={`px-4 py-2 rounded-xl font-black text-xs transition-all shrink-0 flex items-center gap-1 ${
+                            isAdded
+                              ? 'bg-zinc-800 text-emerald-400 border border-emerald-500/30 cursor-default'
+                              : 'bg-[#1DB954] hover:bg-[#1ed760] text-black shadow-lg active:scale-95'
+                          }`}
+                        >
+                          {isAdded ? (
+                            <>
+                              <Check size={15} />
+                              <span>تمت الإضافة</span>
+                            </>
+                          ) : (
+                            <>
+                              <Plus size={15} />
+                              <span>إضافة</span>
+                            </>
+                          )}
+                        </button>
+                      </div>
+                    );
+                  })
               ) : (
                 <div className="py-10 text-center text-zinc-500 text-xs font-semibold">
-                  ابحث عن اسم الفنان لعرض كافة أغانيه وألبوماته وإضافتها بضغطة زر 🎵
+                  ابحث عن اسم الفنان لعرض أغانيه من YouTube و SoundCloud مع الليركس متزامنة 🎵
                 </div>
               )}
             </div>
