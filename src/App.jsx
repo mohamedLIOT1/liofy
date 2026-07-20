@@ -241,6 +241,35 @@ export default function App() {
     }
   }, [currentTrack]);
 
+  // Automatic Full Audio Upgrader for 30s preview tracks
+  useEffect(() => {
+    if (!currentTrack || !currentTrack.audioUrl) return;
+    const is30sPreview = currentTrack.audioUrl.includes('itunes.apple.com') || currentTrack.audioUrl.includes('apple.com') || (currentTrack.duration && currentTrack.duration <= 35);
+    
+    if (is30sPreview) {
+      const upgradeAudioToFullLength = async () => {
+        try {
+          const query = `${currentTrack.artist} ${currentTrack.title}`;
+          const res = await fetch(`https://inv.tux.pizza/api/v1/search?q=${encodeURIComponent(query)}&type=video`);
+          const data = await res.json();
+          if (Array.isArray(data) && data.length > 0) {
+            const topMatch = data[0];
+            if (topMatch && topMatch.videoId) {
+              const fullAudioUrl = `https://inv.tux.pizza/latest_version?id=${topMatch.videoId}&itag=140`;
+              const fullDuration = topMatch.lengthSeconds || 210;
+
+              setCurrentTrack((prev) => (prev && prev.id === currentTrack.id ? { ...prev, audioUrl: fullAudioUrl, duration: fullDuration } : prev));
+              setTracks((prev) => prev.map((t) => (t.id === currentTrack.id ? { ...t, audioUrl: fullAudioUrl, duration: fullDuration } : t)));
+            }
+          }
+        } catch (err) {
+          console.warn('Full audio upgrade status:', err);
+        }
+      };
+      upgradeAudioToFullLength();
+    }
+  }, [currentTrack?.id]);
+
   // Single Unified Audio Playback Controller
   useEffect(() => {
     const audio = audioRef.current;
