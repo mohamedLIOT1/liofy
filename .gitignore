@@ -1,0 +1,7 @@
+node_modules/
+dist/
+extracted_apk/
+*.xapk
+*.zip
+*.lnk
+.DS_Store

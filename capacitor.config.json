@@ -1,0 +1,8 @@
+{
+  "appId": "com.liofy.app",
+  "appName": "Liofy",
+  "webDir": "dist",
+  "server": {
+    "androidScheme": "https"
+  }
+}

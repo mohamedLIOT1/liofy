@@ -1,0 +1,687 @@
+import React, { useState, useRef, useEffect } from 'react';
+import Navigation from './components/Navigation';
+import MiniPlayer from './components/MiniPlayer';
+import FullPlayerModal from './components/FullPlayerModal';
+import EqualizerModal from './components/EqualizerModal';
+import SleepTimerModal from './components/SleepTimerModal';
+import CreatePlaylistModal from './components/CreatePlaylistModal';
+import AddToPlaylistModal from './components/AddToPlaylistModal';
+import SettingsModal from './components/SettingsModal';
+import AddSongModal from './components/AddSongModal';
+import AuthModal from './components/AuthModal';
+import JamRoomModal from './components/JamRoomModal';
+import BlendModal from './components/BlendModal';
+
+import HomeScreen from './screens/HomeScreen';
+import SearchScreen from './screens/SearchScreen';
+import LibraryScreen from './screens/LibraryScreen';
+import PodcastsScreen from './screens/PodcastsScreen';
+import ArtistScreen from './screens/ArtistScreen';
+import StatsScreen from './screens/StatsScreen';
+import CarModeScreen from './screens/CarModeScreen';
+import MixesScreen from './screens/MixesScreen';
+import PlaylistScreen from './screens/PlaylistScreen';
+
+export default function App() {
+  // User Account State
+  const [currentUser, setCurrentUser] = useState(() => {
+    try {
+      const saved = localStorage.getItem('liofy_user');
+      return saved ? JSON.parse(saved) : {
+        id: 'user-main',
+        name: 'Mohamed',
+        email: 'mohamed@liofy.app',
+        avatar: 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=400&auto=format&fit=crop&q=80',
+        isPremium: true
+      };
+    } catch(e) { return null; }
+  });
+
+  // Jam Session State
+  const [jamSession, setJamSession] = useState(null);
+
+  // Clean Empty State for Real User Tracks
+  const [tracks, setTracks] = useState(() => {
+    try {
+      const saved = localStorage.getItem('liofy_tracks');
+      if (saved) {
+        const parsed = JSON.parse(saved);
+        if (Array.isArray(parsed)) return parsed;
+      }
+    } catch (err) {}
+    return [];
+  });
+
+  // Clean Empty State for User Playlists
+  const [playlists, setPlaylists] = useState(() => {
+    try {
+      const saved = localStorage.getItem('liofy_playlists');
+      if (saved) {
+        const parsed = JSON.parse(saved);
+        if (Array.isArray(parsed)) return parsed;
+      }
+    } catch(e){}
+    return [];
+  });
+
+  const [currentTrack, setCurrentTrack] = useState(() => tracks[0] || null);
+  const [isPlaying, setIsPlaying] = useState(false);
+  const [currentTime, setCurrentTime] = useState(0);
+  const [duration, setDuration] = useState(180);
+  const [volume, setVolume] = useState(0.8);
+  const [isShuffle, setIsShuffle] = useState(false);
+  const [isRepeat, setIsRepeat] = useState(false);
+
+  // Equalizer State
+  const [eqEnabled, setEqEnabled] = useState(true);
+  const [eqPreset, setEqPreset] = useState('Bass Booster');
+  const [eqBands, setEqBands] = useState({
+    '60Hz': 6,
+    '230Hz': 4,
+    '910Hz': 0,
+    '3.6kHz': -2,
+    '14kHz': 3
+  });
+
+  const applyEqPreset = (name) => {
+    setEqPreset(name);
+    if (name === 'Bass Booster') {
+      setEqBands({ '60Hz': 7, '230Hz': 5, '910Hz': 0, '3.6kHz': -2, '14kHz': 1 });
+    } else if (name === 'Vocal Booster') {
+      setEqBands({ '60Hz': -2, '230Hz': 1, '910Hz': 6, '3.6kHz': 5, '14kHz': 2 });
+    } else if (name === 'Electronic') {
+      setEqBands({ '60Hz': 5, '230Hz': 4, '910Hz': 1, '3.6kHz': 4, '14kHz': 6 });
+    } else if (name === 'Rock') {
+      setEqBands({ '60Hz': 6, '230Hz': 3, '910Hz': -1, '3.6kHz': 3, '14kHz': 5 });
+    } else if (name === 'Acoustic') {
+      setEqBands({ '60Hz': 3, '230Hz': 1, '910Hz': 2, '3.6kHz': 4, '14kHz': 3 });
+    } else {
+      setEqBands({ '60Hz': 0, '230Hz': 0, '910Hz': 0, '3.6kHz': 0, '14kHz': 0 });
+    }
+  };
+
+  // Settings State
+  const [audioQuality, setAudioQuality] = useState('320');
+  const [crossfade, setCrossfade] = useState(4);
+  const [isOfflineMode, setIsOfflineMode] = useState(false);
+
+  const [currentScreen, setCurrentScreen] = useState('home');
+  const [selectedArtist, setSelectedArtist] = useState(null);
+  const [selectedPlaylist, setSelectedPlaylist] = useState(null);
+
+  // Modals state
+  const [isFullPlayerOpen, setIsFullPlayerOpen] = useState(false);
+  const [isEqualizerOpen, setIsEqualizerOpen] = useState(false);
+  const [isSleepTimerOpen, setIsSleepTimerOpen] = useState(false);
+  const [isCreatePlaylistOpen, setIsCreatePlaylistOpen] = useState(false);
+  const [isAddToPlaylistOpen, setIsAddToPlaylistOpen] = useState(false);
+  const [isSettingsOpen, setIsSettingsOpen] = useState(false);
+  const [isAddSongOpen, setIsAddSongOpen] = useState(false);
+  const [isAuthOpen, setIsAuthOpen] = useState(false);
+  const [isJamOpen, setIsJamOpen] = useState(false);
+  const [isBlendOpen, setIsBlendOpen] = useState(false);
+
+  const [sleepTimer, setSleepTimer] = useState(0);
+
+  const audioRef = useRef(null);
+
+  // Clear legacy mock data from localStorage once
+  useEffect(() => {
+    try {
+      const saved = localStorage.getItem('liofy_tracks');
+      if (saved && saved.includes('Starboy')) {
+        localStorage.removeItem('liofy_tracks');
+        localStorage.removeItem('liofy_playlists');
+        setTracks([]);
+        setPlaylists([]);
+        setCurrentTrack(null);
+      }
+    } catch(e){}
+  }, []);
+
+  // Save currentUser to localStorage
+  useEffect(() => {
+    if (currentUser) {
+      localStorage.setItem('liofy_user', JSON.stringify(currentUser));
+    } else {
+      localStorage.removeItem('liofy_user');
+    }
+  }, [currentUser]);
+
+  // Save tracks & playlists to localStorage
+  useEffect(() => {
+    try {
+      localStorage.setItem('liofy_tracks', JSON.stringify(tracks));
+    } catch (err) {}
+  }, [tracks]);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem('liofy_playlists', JSON.stringify(playlists));
+    } catch (err) {}
+  }, [playlists]);
+
+  // Create Audio instance
+  useEffect(() => {
+    const audio = new Audio();
+    audioRef.current = audio;
+
+    const handleTimeUpdate = () => {
+      if (audio && !isNaN(audio.currentTime)) {
+        setCurrentTime(audio.currentTime);
+      }
+    };
+
+    const handleLoadedMetadata = () => {
+      if (audio && !isNaN(audio.duration) && audio.duration > 0) {
+        setDuration(audio.duration);
+      }
+    };
+
+    const handleEnded = () => {
+      playNextTrack();
+    };
+
+    const handleError = (e) => {
+      console.warn('Audio stream error handled safely:', e);
+    };
+
+    audio.addEventListener('timeupdate', handleTimeUpdate);
+    audio.addEventListener('loadedmetadata', handleLoadedMetadata);
+    audio.addEventListener('ended', handleEnded);
+    audio.addEventListener('error', handleError);
+
+    return () => {
+      audio.removeEventListener('timeupdate', handleTimeUpdate);
+      audio.removeEventListener('loadedmetadata', handleLoadedMetadata);
+      audio.removeEventListener('ended', handleEnded);
+      audio.removeEventListener('error', handleError);
+      audio.pause();
+    };
+  }, []);
+
+  // Web MediaSession API integration for Background Audio Playback on Android/iOS/Tablet
+  useEffect(() => {
+    if ('mediaSession' in navigator && currentTrack) {
+      try {
+        navigator.mediaSession.metadata = new MediaMetadata({
+          title: currentTrack.title,
+          artist: currentTrack.artist,
+          album: currentTrack.album || 'Liofy',
+          artwork: [{ src: currentTrack.cover || 'https://images.unsplash.com/photo-1514525253161-7a46d19cd819?w=600', sizes: '512x512', type: 'image/png' }]
+        });
+
+        navigator.mediaSession.setActionHandler('play', () => setIsPlaying(true));
+        navigator.mediaSession.setActionHandler('pause', () => setIsPlaying(false));
+        navigator.mediaSession.setActionHandler('previoustrack', () => playPrevTrack());
+        navigator.mediaSession.setActionHandler('nexttrack', () => playNextTrack());
+      } catch (err) {}
+    }
+  }, [currentTrack]);
+
+  // Single Unified Audio Playback Controller
+  useEffect(() => {
+    const audio = audioRef.current;
+    if (!audio || !currentTrack || !currentTrack.audioUrl) return;
+
+    if (audio.src !== currentTrack.audioUrl) {
+      audio.src = currentTrack.audioUrl;
+    }
+
+    if (isPlaying) {
+      audio.play().catch((err) => {
+        console.warn('Safe audio playback handling:', err);
+      });
+    } else {
+      audio.pause();
+    }
+  }, [currentTrack, isPlaying]);
+
+  // Sync Volume
+  useEffect(() => {
+    if (audioRef.current) {
+      audioRef.current.volume = Math.max(0, Math.min(1, volume));
+    }
+  }, [volume]);
+
+  // Sleep Timer countdown
+  useEffect(() => {
+    if (sleepTimer > 0) {
+      const timer = setTimeout(() => {
+        setIsPlaying(false);
+        setSleepTimer(0);
+      }, sleepTimer * 60 * 1000);
+      return () => clearTimeout(timer);
+    }
+  }, [sleepTimer]);
+
+  const togglePlay = () => {
+    if (!currentTrack) return;
+    if (isOfflineMode && !currentTrack.downloaded) {
+      alert('Offline mode is active! Download this song first to listen offline.');
+      return;
+    }
+    setIsPlaying((prev) => !prev);
+  };
+
+  const playTrack = (track) => {
+    if (!track) return;
+    if (isOfflineMode && !track.downloaded) {
+      alert('Offline mode is active! Download this song first to listen offline.');
+      return;
+    }
+
+    setTracks((prev) =>
+      prev.map((t) => (t.id === track.id ? { ...t, plays: (Number(t.plays) || 0) + 1 } : t))
+    );
+
+    setCurrentTrack(track);
+    setIsPlaying(true);
+  };
+
+  const playNextTrack = () => {
+    if (!tracks || tracks.length === 0) return;
+    const activeTracks = isOfflineMode ? tracks.filter(t => t.downloaded) : tracks;
+    if (activeTracks.length === 0) return;
+
+    if (isShuffle) {
+      const randomIdx = Math.floor(Math.random() * activeTracks.length);
+      playTrack(activeTracks[randomIdx]);
+    } else {
+      const currentIdx = activeTracks.findIndex((t) => t.id === (currentTrack ? currentTrack.id : ''));
+      const nextIdx = (currentIdx + 1) % activeTracks.length;
+      playTrack(activeTracks[nextIdx]);
+    }
+  };
+
+  const playPrevTrack = () => {
+    if (!tracks || tracks.length === 0) return;
+    const activeTracks = isOfflineMode ? tracks.filter(t => t.downloaded) : tracks;
+    if (activeTracks.length === 0) return;
+
+    const currentIdx = activeTracks.findIndex((t) => t.id === (currentTrack ? currentTrack.id : ''));
+    const prevIdx = (currentIdx - 1 + activeTracks.length) % activeTracks.length;
+    playTrack(activeTracks[prevIdx]);
+  };
+
+  const toggleLike = (trackId) => {
+    setTracks((prev) =>
+      prev.map((t) => (t.id === trackId ? { ...t, liked: !t.liked } : t))
+    );
+  };
+
+  const toggleDownload = (trackId) => {
+    setTracks((prev) =>
+      prev.map((t) => {
+        if (t.id === trackId) {
+          return { ...t, downloaded: !t.downloaded };
+        }
+        return t;
+      })
+    );
+  };
+
+  const seekTo = (seconds) => {
+    if (audioRef.current && !isNaN(seconds)) {
+      audioRef.current.currentTime = seconds;
+      setCurrentTime(seconds);
+    }
+  };
+
+  const handleAddSong = (newSong) => {
+    if (!newSong) return;
+    setTracks((prev) => [newSong, ...prev]);
+    setCurrentTrack(newSong);
+    setIsPlaying(true);
+  };
+
+  const handleCreatePlaylist = (name, description) => {
+    const newPl = {
+      id: `pl-${Date.now()}`,
+      name,
+      description: description || 'My Custom Playlist',
+      cover: 'https://images.unsplash.com/photo-1514525253161-7a46d19cd819?w=600&auto=format&fit=crop&q=80',
+      trackIds: []
+    };
+    setPlaylists((prev) => [...prev, newPl]);
+    setSelectedPlaylist(newPl);
+    setCurrentScreen('playlist');
+  };
+
+  const handleCreateBlend = (friendName, friendGenre, tasteMatchScore) => {
+    const newBlend = {
+      id: `blend-${Date.now()}`,
+      name: `Blend with ${friendName}`,
+      description: `${tasteMatchScore}% Taste Match • Shared Blend`,
+      cover: 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=600&auto=format&fit=crop&q=80',
+      trackIds: [],
+      isBlend: true,
+      tasteMatchScore
+    };
+    setPlaylists((prev) => [...prev, newBlend]);
+    setSelectedPlaylist(newBlend);
+    setCurrentScreen('playlist');
+  };
+
+  const handleStartJam = () => {
+    const code = `JAM-${Math.floor(1000 + Math.random() * 9000)}`;
+    const newSession = {
+      code,
+      hostId: currentUser ? currentUser.id : 'user-main',
+      members: [
+        { id: currentUser ? currentUser.id : 'user-main', name: currentUser ? currentUser.name : 'Host', avatar: currentUser ? currentUser.avatar : 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=400&auto=format&fit=crop&q=80', isHost: true }
+      ]
+    };
+    setJamSession(newSession);
+  };
+
+  const handleJoinJam = (code) => {
+    const joinedSession = {
+      code,
+      hostId: 'user-friend',
+      members: [
+        { id: 'user-friend', name: 'Friend (Host)', avatar: 'https://images.unsplash.com/photo-1517841905240-472988babdf9?w=400&auto=format&fit=crop&q=80', isHost: true },
+        { id: currentUser ? currentUser.id : 'user-main', name: currentUser ? currentUser.name : 'You', avatar: currentUser ? currentUser.avatar : 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=400&auto=format&fit=crop&q=80', isHost: false }
+      ]
+    };
+    setJamSession(joinedSession);
+  };
+
+  const handleAddTrackToPlaylist = (trackId, playlistId) => {
+    setPlaylists((prev) =>
+      prev.map((pl) => {
+        if (pl.id === playlistId) {
+          const existingIds = pl.trackIds || [];
+          if (!existingIds.includes(trackId)) {
+            return { ...pl, trackIds: [...existingIds, trackId] };
+          }
+        }
+        return pl;
+      })
+    );
+  };
+
+  const handleRemoveTrackFromPlaylist = (trackId, playlistId) => {
+    setPlaylists((prev) =>
+      prev.map((pl) => {
+        if (pl.id === playlistId) {
+          return { ...pl, trackIds: (pl.trackIds || []).filter(id => id !== trackId) };
+        }
+        return pl;
+      })
+    );
+  };
+
+  const handleSelectArtist = (artist) => {
+    setSelectedArtist(artist);
+    setCurrentScreen('artist');
+  };
+
+  const handleSelectPlaylistView = (pl) => {
+    setSelectedPlaylist(pl);
+    setCurrentScreen('playlist');
+  };
+
+  const handlePlayPodcastEpisode = (episode, podcast) => {
+    const podTrack = {
+      id: episode.id,
+      title: episode.title,
+      artist: podcast.author,
+      album: podcast.title,
+      cover: podcast.cover,
+      audioUrl: episode.audioUrl,
+      duration: 180,
+      liked: false,
+      color: '#3F51B5',
+      lyrics: [{ time: 0, text: episode.description }]
+    };
+    setCurrentTrack(podTrack);
+    setIsPlaying(true);
+  };
+
+  const handleSelectMix = (mix) => {
+    if (mix && mix.trackIds && mix.trackIds.length > 0 && tracks.length > 0) {
+      const mixTrack = tracks.find(t => mix.trackIds.includes(t.id)) || tracks[0];
+      playTrack(mixTrack);
+    }
+  };
+
+  return (
+    <div className="flex h-screen bg-[#121212] text-white overflow-hidden relative select-none">
+      {/* Navigation Layout */}
+      <Navigation
+        currentScreen={currentScreen}
+        setCurrentScreen={(screen) => {
+          if (typeof screen === 'string' && screen.startsWith('playlist:')) {
+            const plId = screen.split(':')[1];
+            const foundPl = playlists.find(p => p.id === plId);
+            if (foundPl) handleSelectPlaylistView(foundPl);
+          } else {
+            setCurrentScreen(screen);
+          }
+        }}
+        playlists={playlists}
+        openCreatePlaylistModal={() => setIsCreatePlaylistOpen(true)}
+        openSettings={() => setIsSettingsOpen(true)}
+        openAddSongModal={() => setIsAddSongOpen(true)}
+        openAuthModal={() => setIsAuthOpen(true)}
+        openJamModal={() => setIsJamOpen(true)}
+        openBlendModal={() => setIsBlendOpen(true)}
+        currentUser={currentUser}
+        jamSession={jamSession}
+      />
+
+      {/* Main Screen Content View */}
+      <main className="flex-1 flex flex-col h-full overflow-hidden bg-[#121212]">
+        {currentScreen === 'home' && (
+          <HomeScreen
+            tracks={tracks}
+            playlists={playlists}
+            artists={[]}
+            onSelectTrack={playTrack}
+            onSelectPlaylist={handleSelectPlaylistView}
+            toggleLike={toggleLike}
+            onSelectArtist={handleSelectArtist}
+            openAddSongModal={() => setIsAddSongOpen(true)}
+          />
+        )}
+
+        {currentScreen === 'mixes' && (
+          <MixesScreen
+            tracks={tracks}
+            onSelectTrack={playTrack}
+            onSelectMix={handleSelectMix}
+            currentTrack={currentTrack}
+            isPlaying={isPlaying}
+            togglePlay={togglePlay}
+          />
+        )}
+
+        {currentScreen === 'search' && (
+          <SearchScreen
+            tracks={tracks}
+            onSelectTrack={playTrack}
+            toggleLike={toggleLike}
+          />
+        )}
+
+        {currentScreen === 'library' && (
+          <LibraryScreen
+            playlists={playlists}
+            tracks={tracks}
+            onSelectPlaylist={handleSelectPlaylistView}
+            onSelectTrack={playTrack}
+            openCreatePlaylistModal={() => setIsCreatePlaylistOpen(true)}
+            toggleLike={toggleLike}
+          />
+        )}
+
+        {currentScreen === 'playlist' && selectedPlaylist && (
+          <PlaylistScreen
+            playlist={playlists.find(p => p.id === selectedPlaylist.id) || selectedPlaylist}
+            tracks={tracks}
+            onSelectTrack={playTrack}
+            toggleLike={toggleLike}
+            toggleDownload={toggleDownload}
+            onBack={() => setCurrentScreen('library')}
+            onAddTrackToPlaylist={handleAddTrackToPlaylist}
+            onRemoveTrackFromPlaylist={handleRemoveTrackFromPlaylist}
+          />
+        )}
+
+        {currentScreen === 'podcasts' && (
+          <PodcastsScreen onPlayEpisode={handlePlayPodcastEpisode} />
+        )}
+
+        {currentScreen === 'artist' && selectedArtist && (
+          <ArtistScreen
+            artist={selectedArtist}
+            tracks={tracks}
+            onSelectTrack={playTrack}
+            toggleLike={toggleLike}
+          />
+        )}
+
+        {currentScreen === 'stats' && <StatsScreen tracks={tracks} currentUser={currentUser} />}
+
+        {currentScreen === 'carmode' && currentTrack && (
+          <CarModeScreen
+            currentTrack={currentTrack}
+            isPlaying={isPlaying}
+            togglePlay={togglePlay}
+            playNext={playNextTrack}
+            playPrev={playPrevTrack}
+            exitCarMode={() => setCurrentScreen('home')}
+          />
+        )}
+      </main>
+
+      {/* Bottom Sticky Mini Player */}
+      {currentScreen !== 'carmode' && currentTrack && (
+        <MiniPlayer
+          currentTrack={currentTrack}
+          isPlaying={isPlaying}
+          togglePlay={togglePlay}
+          playNext={playNextTrack}
+          toggleLike={toggleLike}
+          openFullPlayer={() => setIsFullPlayerOpen(true)}
+          openEqualizer={() => setIsEqualizerOpen(true)}
+          openSleepTimer={() => setIsSleepTimerOpen(true)}
+          openAddToPlaylist={() => setIsAddToPlaylistOpen(true)}
+          currentTime={currentTime}
+          duration={duration}
+        />
+      )}
+
+      {/* Full Screen Player Modal */}
+      <FullPlayerModal
+        currentTrack={currentTrack}
+        isPlaying={isPlaying}
+        togglePlay={togglePlay}
+        playNext={playNextTrack}
+        playPrev={playPrevTrack}
+        toggleLike={toggleLike}
+        toggleDownload={toggleDownload}
+        isOpen={isFullPlayerOpen}
+        onClose={() => setIsFullPlayerOpen(false)}
+        currentTime={currentTime}
+        duration={duration}
+        seekTo={seekTo}
+        volume={volume}
+        setVolume={setVolume}
+        isShuffle={isShuffle}
+        toggleShuffle={() => setIsShuffle((prev) => !prev)}
+        isRepeat={isRepeat}
+        toggleRepeat={() => setIsRepeat((prev) => !prev)}
+        queue={tracks}
+        openEqualizer={() => setIsEqualizerOpen(true)}
+        openSleepTimer={() => setIsSleepTimerOpen(true)}
+        openAddToPlaylist={() => setIsAddToPlaylistOpen(true)}
+      />
+
+      {/* Audio Equalizer Modal */}
+      <EqualizerModal
+        isOpen={isEqualizerOpen}
+        onClose={() => setIsEqualizerOpen(false)}
+        enabled={eqEnabled}
+        setEnabled={setEqEnabled}
+        preset={eqPreset}
+        applyPreset={applyEqPreset}
+        bands={eqBands}
+        setBands={setEqBands}
+      />
+
+      {/* Sleep Timer Modal */}
+      <SleepTimerModal
+        isOpen={isSleepTimerOpen}
+        onClose={() => setIsSleepTimerOpen(false)}
+        activeTimer={sleepTimer}
+        setSleepTimer={setSleepTimer}
+      />
+
+      {/* Create Playlist Modal */}
+      <CreatePlaylistModal
+        isOpen={isCreatePlaylistOpen}
+        onClose={() => setIsCreatePlaylistOpen(false)}
+        onCreatePlaylist={handleCreatePlaylist}
+      />
+
+      {/* Add To Playlist Modal */}
+      <AddToPlaylistModal
+        isOpen={isAddToPlaylistOpen}
+        onClose={() => setIsAddToPlaylistOpen(false)}
+        track={currentTrack}
+        playlists={playlists}
+        onAddTrackToPlaylist={handleAddTrackToPlaylist}
+      />
+
+      {/* Settings & Premium Modal */}
+      <SettingsModal
+        isOpen={isSettingsOpen}
+        onClose={() => setIsSettingsOpen(false)}
+        audioQuality={audioQuality}
+        setAudioQuality={setAudioQuality}
+        crossfade={crossfade}
+        setCrossfade={setCrossfade}
+        isOfflineMode={isOfflineMode}
+        setIsOfflineMode={setIsOfflineMode}
+      />
+
+      {/* Add Song & Timed Lyrics Studio Modal */}
+      <AddSongModal
+        isOpen={isAddSongOpen}
+        onClose={() => setIsAddSongOpen(false)}
+        onAddSong={handleAddSong}
+      />
+
+      {/* User Accounts & Profile Auth Modal */}
+      <AuthModal
+        isOpen={isAuthOpen}
+        onClose={() => setIsAuthOpen(false)}
+        currentUser={currentUser}
+        onLogin={(user) => setCurrentUser(user)}
+        onLogout={() => setCurrentUser(null)}
+      />
+
+      {/* Jam Room Live Sync Modal */}
+      <JamRoomModal
+        isOpen={isJamOpen}
+        onClose={() => setIsJamOpen(false)}
+        jamSession={jamSession}
+        onStartJam={handleStartJam}
+        onJoinJam={handleJoinJam}
+        onLeaveJam={() => setJamSession(null)}
+        currentTrack={currentTrack}
+        isPlaying={isPlaying}
+      />
+
+      {/* Spotify Blend Modal */}
+      <BlendModal
+        isOpen={isBlendOpen}
+        onClose={() => setIsBlendOpen(false)}
+        onCreateBlend={handleCreateBlend}
+        currentUser={currentUser}
+      />
+    </div>
+  );
+}
