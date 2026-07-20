@@ -246,7 +246,7 @@ export default function App() {
     }
   }, [currentTrack]);
 
-  // Automatic Full Audio Upgrader for 30s preview tracks via SoundCloud
+  // Automatic Full Audio Upgrader for 30s preview tracks via Backend YouTube/SoundCloud
   useEffect(() => {
     if (!currentTrack || !currentTrack.audioUrl) return;
     const is30sPreview = currentTrack.audioUrl.includes('itunes.apple.com') || currentTrack.audioUrl.includes('apple.com') || (currentTrack.duration && currentTrack.duration <= 35);
@@ -254,7 +254,6 @@ export default function App() {
     if (is30sPreview) {
       const upgradeAudioToFullLength = async () => {
         try {
-          const scClientId = 'emAJdGEj1mm9yjoCD2jkixmgqrGIyfpi';
           const cleanTitle = (currentTrack.title || '')
             .replace(/\(.*?\)/g, '')
             .replace(/\[.*?\]/g, '')
@@ -263,25 +262,17 @@ export default function App() {
             .trim();
 
           const query = `${currentTrack.artist || ''} ${cleanTitle}`.trim();
-          const res = await fetch(`https://api-v2.soundcloud.com/search/tracks?q=${encodeURIComponent(query)}&client_id=${scClientId}&limit=5`);
-          const data = await res.json();
-          if (data && data.collection && data.collection.length > 0) {
-            for (const scItem of data.collection) {
-              const scDurationSec = Math.round((scItem.duration || 0) / 1000);
-              if (scDurationSec <= 35) continue; // Must be full track
+          const res = await fetch(`${API_BASE_URL}/api/search/external?q=${encodeURIComponent(query)}`);
+          if (res.ok) {
+            const data = await res.json();
+            if (data && data.success && Array.isArray(data.tracks) && data.tracks.length > 0) {
+              const fullTrack = data.tracks.find(t => t.audioUrl && (!t.duration || t.duration > 35) && !t.audioUrl.includes('itunes.apple.com'));
+              if (fullTrack) {
+                const fullAudioUrl = fullTrack.audioUrl;
+                const fullDuration = fullTrack.duration || 210;
 
-              const progressive = scItem.media?.transcodings?.find(t => t.format?.protocol === 'progressive');
-              if (progressive) {
-                const streamRes = await fetch(`${progressive.url}?client_id=${scClientId}`);
-                const streamData = await streamRes.json();
-                if (streamData.url) {
-                  const fullAudioUrl = streamData.url;
-                  const fullDuration = scDurationSec;
-
-                  setCurrentTrack((prev) => (prev && prev.id === currentTrack.id ? { ...prev, audioUrl: fullAudioUrl, duration: fullDuration } : prev));
-                  setTracks((prev) => prev.map((t) => (t.id === currentTrack.id ? { ...t, audioUrl: fullAudioUrl, duration: fullDuration } : t)));
-                  break;
-                }
+                setCurrentTrack((prev) => (prev && prev.id === currentTrack.id ? { ...prev, audioUrl: fullAudioUrl, duration: fullDuration } : prev));
+                setTracks((prev) => prev.map((t) => (t.id === currentTrack.id ? { ...t, audioUrl: fullAudioUrl, duration: fullDuration } : t)));
               }
             }
           }

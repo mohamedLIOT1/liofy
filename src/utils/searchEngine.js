@@ -140,33 +140,6 @@ export const searchMusicOnline = async (searchQuery) => {
     }
   } catch(e) {}
 
-  // 4. iTunes Music Fallback Search
-  try {
-    const itunesRes = await fetch(`https://itunes.apple.com/search?term=${encodeURIComponent(cleanQ)}&media=music&limit=15`);
-    if (itunesRes.ok) {
-      const itunesData = await itunesRes.json();
-      if (itunesData.results && itunesData.results.length > 0) {
-        return itunesData.results.map(item => {
-          const title = item.trackName || cleanQ;
-          const artist = item.artistName || 'Artist';
-          const { lyrics, hasSynced } = getLyricsForSong(title, artist);
-          return {
-            id: `itunes-${item.trackId}`,
-            title,
-            artist,
-            album: item.collectionName || 'Album',
-            cover: item.artworkUrl100 ? item.artworkUrl100.replace('100x100bb', '600x600bb') : 'https://images.unsplash.com/photo-1514525253161-7a46d19cd819?w=600',
-            audioUrl: item.previewUrl,
-            duration: Math.round((item.trackTimeMillis || 180000) / 1000),
-            genre: item.primaryGenreName || 'Music',
-            source: 'YouTube',
-            lyrics,
-            hasSynced
-          };
-        });
-      }
-    }
-  } catch(e) {}
-
+  // 4. Client Fallback: Ensure only full length tracks are returned
   return [];
 };
