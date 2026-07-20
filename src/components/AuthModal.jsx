@@ -1,23 +1,44 @@
 import React, { useState } from 'react';
-import { X, User, Lock, Mail, ShieldCheck, LogIn, UserPlus } from 'lucide-react';
+import { X, User, Lock, Mail, ShieldCheck, LogIn, UserPlus, Camera, Upload } from 'lucide-react';
 
 export default function AuthModal({ isOpen, onClose, currentUser, onLogin, onLogout }) {
   const [isSignup, setIsSignup] = useState(false);
   const [name, setName] = useState('');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
+  const [avatar, setAvatar] = useState(currentUser?.avatar || '');
 
   if (!isOpen) return null;
 
+  const defaultAvatarSvg = `data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" width="100" height="100" viewBox="0 0 100 100"><rect width="100" height="100" fill="%231DB954"/><circle cx="50" cy="35" r="18" fill="%23000"/><path d="M20,85 C20,60 35,55 50,55 C65,55 80,60 80,85 Z" fill="%23000"/></svg>`;
+
+  const handleAvatarUpload = (e) => {
+    const file = e.target.files?.[0];
+    if (file) {
+      const reader = new FileReader();
+      reader.onloadend = () => {
+        setAvatar(reader.result);
+      };
+      reader.readAsDataURL(file);
+    }
+  };
+
   const handleSubmit = (e) => {
     e.preventDefault();
+    
+    // Check network connection
+    if (!navigator.onLine) {
+      alert('Network disconnected! Please connect to the internet to sign up / log in to your account.');
+      return;
+    }
+
     if (!email || !password) return;
 
     const userData = {
-      id: `user-${Date.now()}`,
-      name: name || email.split('@')[0],
+      id: currentUser?.id || `user-${Date.now()}`,
+      name: name || currentUser?.name || email.split('@')[0],
       email,
-      avatar: `https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=400&auto=format&fit=crop&q=80`,
+      avatar: avatar || currentUser?.avatar || defaultAvatarSvg,
       isPremium: true,
       tasteProfile: ['Pop', 'Electronic', 'Arab Pop']
     };
@@ -43,7 +64,20 @@ export default function AuthModal({ isOpen, onClose, currentUser, onLogin, onLog
 
         {currentUser ? (
           <div className="py-6 flex flex-col items-center text-center gap-4">
-            <img src={currentUser.avatar} alt={currentUser.name} className="w-20 h-20 rounded-full object-cover shadow-2xl border-2 border-[#1DB954]" />
+            {/* Editable Profile Picture */}
+            <div className="relative group">
+              <img 
+                src={avatar || currentUser.avatar || defaultAvatarSvg} 
+                alt={currentUser.name} 
+                className="w-24 h-24 rounded-full object-cover shadow-2xl border-4 border-[#1DB954]" 
+              />
+              <label className="absolute inset-0 bg-black/60 rounded-full flex flex-col items-center justify-center text-white opacity-0 group-hover:opacity-100 cursor-pointer transition-opacity">
+                <Camera size={22} />
+                <span className="text-[10px] font-bold mt-1">Change</span>
+                <input type="file" accept="image/*" onChange={handleAvatarUpload} className="hidden" />
+              </label>
+            </div>
+
             <div>
               <h4 className="text-xl font-extrabold text-white">{currentUser.name}</h4>
               <p className="text-xs text-zinc-400 mt-0.5">{currentUser.email}</p>
@@ -54,18 +88,48 @@ export default function AuthModal({ isOpen, onClose, currentUser, onLogin, onLog
               <span>Premium Plan Active</span>
             </div>
 
-            <button
-              onClick={() => {
-                onLogout();
-                onClose();
-              }}
-              className="w-full py-3 bg-red-600/20 hover:bg-red-600/40 text-red-400 font-extrabold text-xs rounded-xl border border-red-500/30 transition-colors mt-2"
-            >
-              Sign Out
-            </button>
+            <div className="w-full flex gap-2">
+              <button
+                onClick={() => {
+                  onLogin({ ...currentUser, avatar: avatar || currentUser.avatar });
+                  alert('Profile picture updated successfully!');
+                }}
+                className="flex-1 py-3 bg-[#1DB954] hover:bg-[#1ed760] text-black font-extrabold text-xs rounded-xl transition-colors"
+              >
+                Save Photo
+              </button>
+              <button
+                onClick={() => {
+                  onLogout();
+                  onClose();
+                }}
+                className="py-3 px-4 bg-red-600/20 hover:bg-red-600/40 text-red-400 font-extrabold text-xs rounded-xl border border-red-500/30 transition-colors"
+              >
+                Sign Out
+              </button>
+            </div>
           </div>
         ) : (
           <form onSubmit={handleSubmit} className="flex flex-col gap-4 my-4">
+            {/* Signup Profile Picture Picker */}
+            {isSignup && (
+              <div className="flex flex-col items-center gap-2">
+                <label className="relative group cursor-pointer">
+                  <div className="w-20 h-20 rounded-full bg-zinc-900 border-2 border-dashed border-zinc-700 flex flex-col items-center justify-center text-zinc-400 group-hover:border-[#1DB954] transition-colors overflow-hidden">
+                    {avatar ? (
+                      <img src={avatar} alt="Profile" className="w-full h-full object-cover" />
+                    ) : (
+                      <>
+                        <Upload size={20} />
+                        <span className="text-[9px] font-bold mt-1">Add Photo</span>
+                      </>
+                    )}
+                  </div>
+                  <input type="file" accept="image/*" onChange={handleAvatarUpload} className="hidden" />
+                </label>
+              </div>
+            )}
+
             {isSignup && (
               <div>
                 <label className="text-xs uppercase font-extrabold text-zinc-400 block mb-1">Your Name</label>

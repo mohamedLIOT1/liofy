@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { Play, Pause, Sparkles, Disc, RefreshCw, Layers } from 'lucide-react';
+import { Play, Pause, Sparkles, Disc, RefreshCw } from 'lucide-react';
 
 export default function MixesScreen({ 
   tracks = [], 
@@ -10,6 +10,9 @@ export default function MixesScreen({
   togglePlay 
 }) {
   const [djQuoteIndex, setDjQuoteIndex] = useState(0);
+
+  // Embedded SVG DJ Artwork (Works 100% offline & online with zero broken image icon!)
+  const djAvatarSvg = `data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" width="300" height="300" viewBox="0 0 300 300"><defs><linearGradient id="g" x1="0%" y1="0%" x2="100%" y2="100%"><stop offset="0%" stop-color="%2300E5FF"/><stop offset="100%" stop-color="%231DB954"/></linearGradient></defs><rect width="300" height="300" fill="%23121212"/><circle cx="150" cy="150" r="100" fill="url(%23g)" opacity="0.8"/><circle cx="150" cy="150" r="40" fill="%23121212"/><path d="M70,150 C70,105 105,70 150,70 C195,70 230,105 230,150" fill="none" stroke="%23FFF" stroke-width="12" stroke-linecap="round"/><rect x="55" y="130" width="25" height="40" rx="10" fill="%23FFF"/><rect x="220" y="130" width="25" height="40" rx="10" fill="%23FFF"/></svg>`;
 
   const voiceQuotes = [
     "Hey! I'm DJ Lio, your AI host. Drop some songs into your library and I will create custom mixes for you!",
@@ -37,9 +40,9 @@ export default function MixesScreen({
       {/* AI DJ Lio Card */}
       <div className="bg-gradient-to-r from-cyan-950 via-zinc-900 to-black p-6 md:p-8 rounded-3xl border border-cyan-500/30 mb-8 shadow-2xl relative overflow-hidden">
         <div className="flex flex-col md:flex-row items-center gap-6">
-          <div className="relative w-28 h-28 md:w-36 md:h-36 rounded-2xl overflow-hidden shadow-2xl shrink-0 border border-cyan-400/40">
+          <div className="relative w-28 h-28 md:w-36 md:h-36 rounded-2xl overflow-hidden shadow-2xl shrink-0 border border-cyan-400/40 bg-zinc-900">
             <img 
-              src="https://images.unsplash.com/photo-1571266028243-3716f02d2d2e?w=600&auto=format&fit=crop&q=80" 
+              src={djAvatarSvg} 
               alt="DJ Lio" 
               className="w-full h-full object-cover"
             />

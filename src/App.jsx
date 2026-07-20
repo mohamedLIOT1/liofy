@@ -8,6 +8,7 @@ import CreatePlaylistModal from './components/CreatePlaylistModal';
 import AddToPlaylistModal from './components/AddToPlaylistModal';
 import SettingsModal from './components/SettingsModal';
 import AddSongModal from './components/AddSongModal';
+import EditSongModal from './components/EditSongModal';
 import AuthModal from './components/AuthModal';
 import JamRoomModal from './components/JamRoomModal';
 import BlendModal from './components/BlendModal';
@@ -23,24 +24,18 @@ import MixesScreen from './screens/MixesScreen';
 import PlaylistScreen from './screens/PlaylistScreen';
 
 export default function App() {
-  // User Account State
+  // User Account State (Prompt Sign Up / Login if null)
   const [currentUser, setCurrentUser] = useState(() => {
     try {
       const saved = localStorage.getItem('liofy_user');
-      return saved ? JSON.parse(saved) : {
-        id: 'user-main',
-        name: 'Mohamed',
-        email: 'mohamed@liofy.app',
-        avatar: 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=400&auto=format&fit=crop&q=80',
-        isPremium: true
-      };
+      return saved ? JSON.parse(saved) : null;
     } catch(e) { return null; }
   });
 
   // Jam Session State
   const [jamSession, setJamSession] = useState(null);
 
-  // Clean Empty State for Real User Tracks
+  // Tracks State
   const [tracks, setTracks] = useState(() => {
     try {
       const saved = localStorage.getItem('liofy_tracks');
@@ -52,7 +47,7 @@ export default function App() {
     return [];
   });
 
-  // Clean Empty State for User Playlists
+  // Playlists State
   const [playlists, setPlaylists] = useState(() => {
     try {
       const saved = localStorage.getItem('liofy_playlists');
@@ -117,6 +112,8 @@ export default function App() {
   const [isAddToPlaylistOpen, setIsAddToPlaylistOpen] = useState(false);
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [isAddSongOpen, setIsAddSongOpen] = useState(false);
+  const [isEditSongOpen, setIsEditSongOpen] = useState(false);
+  const [editingTrack, setEditingTrack] = useState(null);
   const [isAuthOpen, setIsAuthOpen] = useState(false);
   const [isJamOpen, setIsJamOpen] = useState(false);
   const [isBlendOpen, setIsBlendOpen] = useState(false);
@@ -125,19 +122,12 @@ export default function App() {
 
   const audioRef = useRef(null);
 
-  // Clear legacy mock data from localStorage once
+  // Prompt Auth modal on first boot if no user signed in
   useEffect(() => {
-    try {
-      const saved = localStorage.getItem('liofy_tracks');
-      if (saved && saved.includes('Starboy')) {
-        localStorage.removeItem('liofy_tracks');
-        localStorage.removeItem('liofy_playlists');
-        setTracks([]);
-        setPlaylists([]);
-        setCurrentTrack(null);
-      }
-    } catch(e){}
-  }, []);
+    if (!currentUser) {
+      setIsAuthOpen(true);
+    }
+  }, [currentUser]);
 
   // Save currentUser to localStorage
   useEffect(() => {
@@ -200,7 +190,7 @@ export default function App() {
     };
   }, []);
 
-  // Web MediaSession API integration for Background Audio Playback on Android/iOS/Tablet
+  // Web MediaSession API integration for Background Audio Playback
   useEffect(() => {
     if ('mediaSession' in navigator && currentTrack) {
       try {
@@ -333,6 +323,29 @@ export default function App() {
     setTracks((prev) => [newSong, ...prev]);
     setCurrentTrack(newSong);
     setIsPlaying(true);
+  };
+
+  const handleOpenEditSong = (track) => {
+    setEditingTrack(track);
+    setIsEditSongOpen(true);
+  };
+
+  const handleUpdateSong = (updatedTrack) => {
+    setTracks((prev) =>
+      prev.map((t) => (t.id === updatedTrack.id ? updatedTrack : t))
+    );
+    if (currentTrack && currentTrack.id === updatedTrack.id) {
+      setCurrentTrack(updatedTrack);
+    }
+    alert(`Updated "${updatedTrack.title}" & timed lyrics!`);
+  };
+
+  const handleDeleteSong = (trackId) => {
+    setTracks((prev) => prev.filter((t) => t.id !== trackId));
+    if (currentTrack && currentTrack.id === trackId) {
+      setCurrentTrack(null);
+      setIsPlaying(false);
+    }
   };
 
   const handleCreatePlaylist = (name, description) => {
@@ -483,6 +496,7 @@ export default function App() {
             toggleLike={toggleLike}
             onSelectArtist={handleSelectArtist}
             openAddSongModal={() => setIsAddSongOpen(true)}
+            openEditSongModal={handleOpenEditSong}
           />
         )}
 
@@ -633,6 +647,15 @@ export default function App() {
         track={currentTrack}
         playlists={playlists}
         onAddTrackToPlaylist={handleAddTrackToPlaylist}
+      />
+
+      {/* Edit Song & Timed Lyrics Modal */}
+      <EditSongModal
+        isOpen={isEditSongOpen}
+        onClose={() => setIsEditSongOpen(false)}
+        track={editingTrack}
+        onUpdateSong={handleUpdateSong}
+        onDeleteSong={handleDeleteSong}
       />
 
       {/* Settings & Premium Modal */}

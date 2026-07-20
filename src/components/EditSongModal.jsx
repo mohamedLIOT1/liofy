@@ -1,0 +1,176 @@
+import React, { useState, useEffect } from 'react';
+import { X, Music, AlignLeft, Edit3, Trash2 } from 'lucide-react';
+
+export default function EditSongModal({ isOpen, onClose, track, onUpdateSong, onDeleteSong }) {
+  const [title, setTitle] = useState('');
+  const [artist, setArtist] = useState('');
+  const [album, setAlbum] = useState('');
+  const [cover, setCover] = useState('');
+  const [audioUrl, setAudioUrl] = useState('');
+  const [lyricsText, setLyricsText] = useState('');
+
+  useEffect(() => {
+    if (track) {
+      setTitle(track.title || '');
+      setArtist(track.artist || '');
+      setAlbum(track.album || '');
+      setCover(track.cover || '');
+      setAudioUrl(track.audioUrl || '');
+      
+      const lyricsString = (track.lyrics || [])
+        .map(line => `[${formatTime(line.time)}] ${line.text}`)
+        .join('\n');
+      setLyricsText(lyricsString);
+    }
+  }, [track]);
+
+  if (!isOpen || !track) return null;
+
+  const formatTime = (secs) => {
+    const m = Math.floor(secs / 60);
+    const s = Math.floor(secs % 60);
+    return `${m}:${s < 10 ? '0' : ''}${s}`;
+  };
+
+  const parseTimestamp = (str) => {
+    const match = str.match(/\[?(\d+):(\d+)\]?/);
+    if (match) {
+      return parseInt(match[1]) * 60 + parseInt(match[2]);
+    }
+    return 0;
+  };
+
+  const handleSubmit = (e) => {
+    e.preventDefault();
+
+    const parsedLyrics = lyricsText
+      .split('\n')
+      .filter(line => line.trim())
+      .map((line, idx) => {
+        const time = parseTimestamp(line) || idx * 10;
+        const text = line.replace(/\[\d+:\d+\]/, '').trim();
+        return { time, text };
+      });
+
+    const updated = {
+      ...track,
+      title,
+      artist,
+      album,
+      cover: cover || 'data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" width="300" height="300" viewBox="0 0 300 300"><rect width="300" height="300" fill="%231DB954"/><text x="50%" y="50%" dominant-baseline="middle" text-anchor="middle" fill="%23000" font-size="80">🎵</text></svg>',
+      audioUrl,
+      lyrics: parsedLyrics
+    };
+
+    onUpdateSong(updated);
+    onClose();
+  };
+
+  return (
+    <div className="fixed inset-0 z-50 bg-black/85 backdrop-blur-md flex items-center justify-center p-4 select-none">
+      <div className="bg-[#181818] border border-zinc-800 rounded-3xl max-w-lg w-full p-6 shadow-2xl animate-in zoom-in-95 duration-200">
+        <div className="flex items-center justify-between pb-4 border-b border-zinc-800">
+          <div className="flex items-center gap-2">
+            <Edit3 className="text-[#1DB954]" size={20} />
+            <h3 className="text-lg font-bold text-white">Edit Song & Timed Lyrics</h3>
+          </div>
+          <button onClick={onClose} className="p-1 text-zinc-400 hover:text-white rounded-full">
+            <X size={20} />
+          </button>
+        </div>
+
+        <form onSubmit={handleSubmit} className="flex flex-col gap-4 my-4 max-h-[70vh] overflow-y-auto pr-1">
+          <div>
+            <label className="text-xs uppercase font-extrabold text-zinc-400 block mb-1">Song Title</label>
+            <input
+              type="text"
+              value={title}
+              onChange={(e) => setTitle(e.target.value)}
+              required
+              className="w-full bg-zinc-900 border border-zinc-700 rounded-xl px-4 py-2.5 text-sm text-white focus:outline-none focus:border-[#1DB954]"
+            />
+          </div>
+
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <label className="text-xs uppercase font-extrabold text-zinc-400 block mb-1">Artist Name</label>
+              <input
+                type="text"
+                value={artist}
+                onChange={(e) => setArtist(e.target.value)}
+                required
+                className="w-full bg-zinc-900 border border-zinc-700 rounded-xl px-4 py-2.5 text-sm text-white focus:outline-none focus:border-[#1DB954]"
+              />
+            </div>
+            <div>
+              <label className="text-xs uppercase font-extrabold text-zinc-400 block mb-1">Album</label>
+              <input
+                type="text"
+                value={album}
+                onChange={(e) => setAlbum(e.target.value)}
+                className="w-full bg-zinc-900 border border-zinc-700 rounded-xl px-4 py-2.5 text-sm text-white focus:outline-none focus:border-[#1DB954]"
+              />
+            </div>
+          </div>
+
+          <div>
+            <label className="text-xs uppercase font-extrabold text-zinc-400 block mb-1">Cover Artwork URL</label>
+            <input
+              type="text"
+              value={cover}
+              onChange={(e) => setCover(e.target.value)}
+              className="w-full bg-zinc-900 border border-zinc-700 rounded-xl px-4 py-2.5 text-sm text-white focus:outline-none focus:border-[#1DB954]"
+            />
+          </div>
+
+          <div>
+            <label className="text-xs uppercase font-extrabold text-zinc-400 block mb-1">Audio Stream MP3 URL</label>
+            <input
+              type="text"
+              value={audioUrl}
+              onChange={(e) => setAudioUrl(e.target.value)}
+              required
+              className="w-full bg-zinc-900 border border-zinc-700 rounded-xl px-4 py-2.5 text-sm text-white focus:outline-none focus:border-[#1DB954]"
+            />
+          </div>
+
+          <div>
+            <label className="text-xs uppercase font-extrabold text-zinc-400 block mb-1 flex items-center justify-between">
+              <span>Synced Timed Lyrics</span>
+              <span className="text-[10px] text-[#1DB954]">Format: [0:15] Lyrics Line</span>
+            </label>
+            <textarea
+              rows="5"
+              value={lyricsText}
+              onChange={(e) => setLyricsText(e.target.value)}
+              placeholder="[0:00] First Line&#10;[0:15] Second Line"
+              className="w-full bg-zinc-900 border border-zinc-700 rounded-xl p-3 text-xs text-white font-mono focus:outline-none focus:border-[#1DB954]"
+            />
+          </div>
+
+          <div className="flex gap-2 mt-2">
+            <button
+              type="submit"
+              className="flex-1 py-3 bg-[#1DB954] hover:bg-[#1ed760] text-black font-extrabold rounded-xl transition-all text-xs shadow-lg"
+            >
+              Save Changes & Timed Lyrics
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                if (confirm(`Delete "${track.title}"?`)) {
+                  onDeleteSong(track.id);
+                  onClose();
+                }
+              }}
+              className="py-3 px-4 bg-red-600/20 hover:bg-red-600/40 text-red-400 font-extrabold text-xs rounded-xl border border-red-500/30 transition-colors flex items-center gap-1"
+            >
+              <Trash2 size={16} />
+              <span>Delete</span>
+            </button>
+          </div>
+        </form>
+      </div>
+    </div>
+  );
+}
