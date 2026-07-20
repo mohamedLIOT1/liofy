@@ -290,27 +290,50 @@ app.get('/api/search/external', async (req, res) => {
 
     const scTracks = resolved.filter(Boolean);
 
-    // Map each YouTube track to a DIFFERENT SoundCloud audio (by index)
-    const ytTracks = scTracks.length > 0 ? ytResults.map((yt, i) => {
-      const scMatch = scTracks[i % scTracks.length];
-      const { lyrics, hasSynced } = findLyrics(yt.title, yt.artist);
-      return {
-        ...yt,
-        album: 'YouTube Single',
-        audioUrl: scMatch.audioUrl,
-        genre: 'YouTube',
-        lyrics,
-        hasSynced
-      };
-    }) : [];
+    // Match each YouTube track to a SoundCloud track by title similarity
+    const normalize = (s) => s.toLowerCase().replace(/[^a-z0-9\u0600-\u06FF]/g, '');
+    const ytTracks = [];
+    const usedScIds = new Set();
 
-    // Interleave: SC first, then YT
-    const tracks = [];
-    const maxLen = Math.max(scTracks.length, ytTracks.length);
-    for (let i = 0; i < maxLen; i++) {
-      if (scTracks[i]) tracks.push(scTracks[i]);
-      if (ytTracks[i]) tracks.push(ytTracks[i]);
+    for (const yt of ytResults) {
+      const ytNorm = normalize(yt.title);
+      // Find best matching SC track (not already used)
+      let bestMatch = null;
+      let bestScore = 0;
+      for (const sc of scTracks) {
+        if (usedScIds.has(sc.id)) continue;
+        const scNorm = normalize(sc.title);
+        // Check if titles share significant words
+        if (ytNorm.includes(scNorm) || scNorm.includes(ytNorm)) {
+          bestMatch = sc;
+          bestScore = 3;
+          break;
+        }
+        // Check word overlap
+        const ytWords = ytNorm.split(/\s+/).filter(w => w.length > 2);
+        const scWords = scNorm.split(/\s+/).filter(w => w.length > 2);
+        const overlap = ytWords.filter(w => scWords.some(sw => sw.includes(w) || w.includes(sw))).length;
+        if (overlap > bestScore) {
+          bestScore = overlap;
+          bestMatch = sc;
+        }
+      }
+      if (bestMatch && bestScore >= 1) {
+        usedScIds.add(bestMatch.id);
+        const { lyrics, hasSynced } = findLyrics(yt.title, yt.artist);
+        ytTracks.push({
+          ...yt,
+          album: 'YouTube Single',
+          audioUrl: bestMatch.audioUrl,
+          genre: 'YouTube',
+          lyrics,
+          hasSynced
+        });
+      }
     }
+
+    // SoundCloud first, then matched YouTube
+    const tracks = [...scTracks, ...ytTracks];
 
     // Cache results
     if (tracks.length > 0) {
