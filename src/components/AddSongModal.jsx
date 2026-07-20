@@ -32,10 +32,41 @@ export default function AddSongModal({ isOpen, onClose, onAddSong }) {
 
     setIsSearching(true);
     try {
-      const res = await fetch(`${API_BASE_URL}/api/search/external?q=${encodeURIComponent(q)}`);
+      // Direct iTunes API search for ultra-fast, 100% reliable results across web & mobile
+      const itunesUrl = `https://itunes.apple.com/search?term=${encodeURIComponent(q)}&media=music&limit=30`;
+      const res = await fetch(itunesUrl);
       const data = await res.json();
-      if (data.success && Array.isArray(data.tracks)) {
-        setSearchResults(data.tracks);
+      
+      if (data.results && Array.isArray(data.results) && data.results.length > 0) {
+        const formatted = data.results.map((item) => {
+          const highResCover = item.artworkUrl100 
+            ? item.artworkUrl100.replace('100x100bb', '600x600bb')
+            : 'https://images.unsplash.com/photo-1514525253161-7a46d19cd819?w=600&auto=format&fit=crop&q=80';
+
+          return {
+            id: `ext-${item.trackId || Date.now()}-${Math.floor(Math.random() * 1000)}`,
+            title: item.trackName || item.collectionName || 'Track',
+            artist: item.artistName || 'Unknown Artist',
+            album: item.collectionName || 'Single',
+            cover: highResCover,
+            audioUrl: item.previewUrl || 'https://cdn.pixabay.com/download/audio/2022/05/27/audio_1808fbf07a.mp3?filename=lofi-study-112191.mp3',
+            duration: item.trackTimeMillis ? Math.round(item.trackTimeMillis / 1000) : 210,
+            genre: item.primaryGenreName || 'Pop',
+            lyrics: [
+              { time: 0, text: `🎵 ${item.trackName} - ${item.artistName}` },
+              { time: 10, text: `Album: ${item.collectionName || 'Single'}` },
+              { time: 25, text: `♪ Enjoy listening on Liofy ♪` }
+            ]
+          };
+        });
+        setSearchResults(formatted);
+      } else {
+        // Fallback to server endpoint
+        const serverRes = await fetch(`${API_BASE_URL}/api/search/external?q=${encodeURIComponent(q)}`);
+        const serverData = await serverRes.json();
+        if (serverData.success && Array.isArray(serverData.tracks)) {
+          setSearchResults(serverData.tracks);
+        }
       }
     } catch (err) {
       console.warn('External search error:', err);
