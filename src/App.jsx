@@ -137,21 +137,26 @@ export default function App() {
         const res = await fetch(`${API_BASE_URL}/api/tracks`);
         const data = await res.json();
         if (data.success && Array.isArray(data.tracks) && data.tracks.length > 0) {
-          const formattedServerTracks = data.tracks.map(t => ({
-            id: t._id || t.id,
-            title: t.title,
-            artist: t.artist,
-            album: t.album || 'Single',
-            cover: t.cover,
-            audioUrl: t.audioUrl,
-            lyrics: t.lyrics || [],
-            duration: 210,
-            liked: true
-          }));
+          const formattedServerTracks = data.tracks
+            .filter(t => t.audioUrl && !t.audioUrl.includes('itunes.apple.com') && !t.audioUrl.includes('apple-assets'))
+            .map(t => ({
+              id: t._id || t.id,
+              title: t.title,
+              artist: t.artist,
+              album: t.album || 'Single',
+              cover: t.cover,
+              audioUrl: t.audioUrl,
+              lyrics: t.lyrics || [],
+              duration: t.duration || 240,
+              liked: true
+            }));
+
           setTracks(prev => {
-            const existingIds = new Set(prev.map(x => x.id || x._id));
+            // Remove any old 30s preview tracks
+            const cleanedPrev = prev.filter(x => x.audioUrl && !x.audioUrl.includes('itunes.apple.com'));
+            const existingIds = new Set(cleanedPrev.map(x => x.id || x._id));
             const newUnique = formattedServerTracks.filter(x => !existingIds.has(x.id));
-            return [...newUnique, ...prev];
+            return [...newUnique, ...cleanedPrev];
           });
         }
       } catch (err) {

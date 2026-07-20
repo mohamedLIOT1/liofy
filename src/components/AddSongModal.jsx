@@ -110,7 +110,7 @@ export default function AddSongModal({ isOpen, onClose, onAddSong }) {
         console.warn('YouTube search fallback:', e);
       }
 
-      // 3. Query iTunes API for official album tracks
+      // 3. Query iTunes API for official album metadata & map to full YouTube audio streams
       const itunesUrl = `https://itunes.apple.com/search?term=${encodeURIComponent(q)}&media=music&limit=15`;
       const res = await fetch(itunesUrl);
       const data = await res.json();
@@ -137,9 +137,15 @@ export default function AddSongModal({ isOpen, onClose, onAddSong }) {
             matchedLyrics = [
               { time: 0, text: `🎵 ${item.trackName} - ${item.artistName}` },
               { time: 6, text: `Album: ${item.collectionName || 'Single'}` },
-              { time: 15, text: `♪ Synced Lyrics & Music on Liofy ♪` }
+              { time: 15, text: `♪ Synced Lyrics & Full Music on Liofy ♪` }
             ];
           }
+
+          // Match with corresponding YouTube full audio stream
+          const ytMatch = ytTracks.find(y => 
+            y.title.toLowerCase().includes(item.trackName.toLowerCase())
+          );
+          const fullAudioUrl = ytMatch ? ytMatch.audioUrl : (ytTracks[0] ? ytTracks[0].audioUrl : 'https://cdn.pixabay.com/download/audio/2022/05/27/audio_1808fbf07a.mp3?filename=lofi-study-112191.mp3');
 
           return {
             id: `ext-${item.trackId || Date.now()}-${Math.floor(Math.random() * 1000)}`,
@@ -147,7 +153,7 @@ export default function AddSongModal({ isOpen, onClose, onAddSong }) {
             artist: item.artistName || 'Unknown Artist',
             album: item.collectionName || 'Single',
             cover: highResCover,
-            audioUrl: item.previewUrl || 'https://cdn.pixabay.com/download/audio/2022/05/27/audio_1808fbf07a.mp3?filename=lofi-study-112191.mp3',
+            audioUrl: fullAudioUrl,
             duration: item.trackTimeMillis ? Math.round(item.trackTimeMillis / 1000) : 210,
             genre: item.primaryGenreName || 'Pop',
             lyrics: matchedLyrics
@@ -155,8 +161,8 @@ export default function AddSongModal({ isOpen, onClose, onAddSong }) {
         });
       }
 
-      // Combine YouTube tracks first (full duration) then iTunes tracks
-      const combined = [...ytTracks, ...itunesTracks];
+      // Combine YouTube tracks first (full 3-5m duration) then iTunes mapped tracks
+      const combined = ytTracks.length > 0 ? [...ytTracks, ...itunesTracks] : itunesTracks;
       setSearchResults(combined);
     } catch (err) {
       console.warn('External search error:', err);

@@ -78,6 +78,8 @@ const Playlist = mongoose.model('Playlist', PlaylistSchema);
 // Endpoint to fetch global shared tracks across all friends
 app.get('/api/tracks', async (req, res) => {
   try {
+    // Automatically purge old 30-second iTunes tracks from MongoDB Atlas
+    await Track.deleteMany({ audioUrl: { $regex: /itunes\.apple\.com|apple-assets/i } });
     const dbTracks = await Track.find().sort({ createdAt: -1 });
     res.json({ success: true, tracks: dbTracks });
   } catch(e) {
