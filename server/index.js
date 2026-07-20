@@ -174,115 +174,79 @@ app.get('/api/search/external', async (req, res) => {
     if (!q || !q.trim()) return res.json({ success: true, tracks: [] });
 
     const cleanQuery = q.trim();
+    const scClientId = 'emAJdGEj1mm9yjoCD2jkixmgqrGIyfpi';
 
-    // 1. Fetch real synced lyrics from LrcLib API
-    let lrcTracks = [];
-    try {
-      // Query LrcLib with clean query
-      const lrcRes = await fetch(`https://lrclib.net/api/search?q=${encodeURIComponent(cleanQuery)}`);
-      const lrcData = await lrcRes.json();
-      if (Array.isArray(lrcData)) lrcTracks = lrcData;
-    } catch(e){}
+    // 1. Fetch SoundCloud tracks & LrcLib lyrics in parallel!
+    const [scRes, lrcRes] = await Promise.all([
+      fetch(`https://api-v2.soundcloud.com/search/tracks?q=${encodeURIComponent(cleanQuery)}&client_id=${scClientId}&limit=15`).catch(() => null),
+      fetch(`https://lrclib.net/api/search?q=${encodeURIComponent(cleanQuery)}`).catch(() => null)
+    ]);
+
+    const scData = scRes && scRes.ok ? await scRes.json() : { collection: [] };
+    const lrcTracks = lrcRes && lrcRes.ok ? await lrcRes.json() : [];
 
     const findLyrics = (title, artist) => {
-      let matchedLrc = lrcTracks.find(l => 
+      let matchedLrc = Array.isArray(lrcTracks) ? lrcTracks.find(l => 
         l.trackName && title &&
         (l.trackName.toLowerCase().includes(title.toLowerCase()) || title.toLowerCase().includes(l.trackName.toLowerCase()))
-      );
+      ) : null;
+
       if (matchedLrc && matchedLrc.syncedLyrics) {
         const parsed = parseLrcLyrics(matchedLrc.syncedLyrics);
-        if (parsed) return parsed;
+        if (parsed) return { lyrics: parsed, hasSynced: true };
       }
-      return [
-        { time: 0, text: `🎵 ${title} - ${artist}` },
-        { time: 5, text: `♪ Synced Lyrics & Full Music on Liofy ♪` }
-      ];
+      return {
+        lyrics: [
+          { time: 0, text: `🎵 ${title} - ${artist}` },
+          { time: 5, text: `♪ Synced Lyrics & Full Music on Liofy ♪` }
+        ],
+        hasSynced: false
+      };
     };
 
-    // 2. SoundCloud Search (Direct High-Quality Full MP3 Streams)
-    let scTracks = [];
-    const scClientId = 'emAJdGEj1mm9yjoCD2jkixmgqrGIyfpi';
-    try {
-      const scRes = await fetch(`https://api-v2.soundcloud.com/search/tracks?q=${encodeURIComponent(cleanQuery)}&client_id=${scClientId}&limit=15`);
-      const scData = await scRes.json();
-      if (scData && Array.isArray(scData.collection)) {
-        for (const item of scData.collection) {
-          const durationSec = Math.round((item.duration || 0) / 1000);
-          if (durationSec <= 35) continue; // Skip 30s clips
+    // 2. Resolve stream MP3 URLs in parallel with Promise.all
+    const rawCollection = (scData.collection || []).filter(item => Math.round((item.duration || 0) / 1000) > 35);
 
-          const progressive = item.media?.transcodings?.find(t => t.format?.protocol === 'progressive');
-          let audioUrl = null;
-          if (progressive) {
-            try {
-              const streamRes = await fetch(`${progressive.url}?client_id=${scClientId}`);
+    const scTracksResolved = await Promise.all(
+      rawCollection.map(async (item) => {
+        const progressive = item.media?.transcodings?.find(t => t.format?.protocol === 'progressive');
+        let audioUrl = null;
+        if (progressive) {
+          try {
+            const streamRes = await fetch(`${progressive.url}?client_id=${scClientId}`);
+            if (streamRes.ok) {
               const streamData = await streamRes.json();
               audioUrl = streamData.url;
-            } catch(e){}
-          }
-
-          if (audioUrl) {
-            const title = item.title || 'SoundCloud Track';
-            const artist = item.user?.username || 'SoundCloud Artist';
-            scTracks.push({
-              id: `sc-${item.id}`,
-              title,
-              artist,
-              album: 'SoundCloud Single',
-              cover: item.artwork_url ? item.artwork_url.replace('-large', '-t500x500') : (item.user?.avatar_url || 'https://images.unsplash.com/photo-1514525253161-7a46d19cd819?w=600'),
-              audioUrl,
-              duration: durationSec,
-              genre: 'SoundCloud',
-              source: 'SoundCloud',
-              lyrics: findLyrics(title, artist)
-            });
-          }
+            }
+          } catch(e){}
         }
-      }
-    } catch(e) {
-      console.warn('SoundCloud search error:', e.message);
-    }
 
-    // 3. YouTube Search via Piped API
-    let ytTracks = [];
-    try {
-      const ytRes = await fetch(`https://api.piped.private.coffee/search?q=${encodeURIComponent(cleanQuery)}&filter=music_songs`);
-      const ytData = await ytRes.json();
-      if (ytData && Array.isArray(ytData.items)) {
-        for (const item of ytData.items.slice(0, 15)) {
-          const videoId = item.url ? item.url.replace('/watch?v=', '') : '';
-          const title = item.title || 'YouTube Track';
-          const artist = item.uploaderName || 'YouTube Artist';
-          const highResCover = item.thumbnail
-            ? item.thumbnail.replace(/w120-h120/, 'w600-h600')
-            : `https://i.ytimg.com/vi/${videoId}/hqdefault.jpg`;
+        if (!audioUrl) return null;
 
-          // Match with SoundCloud stream if available for YouTube item, or use direct stream
-          const scMatch = scTracks.find(s => s.title.toLowerCase().includes(title.toLowerCase()));
-          const audioUrl = scMatch ? scMatch.audioUrl : (scTracks[0] ? scTracks[0].audioUrl : '');
+        const title = item.title || 'SoundCloud Track';
+        const artist = item.user?.username || 'SoundCloud Artist';
+        const durationSec = Math.round((item.duration || 180000) / 1000);
+        const { lyrics, hasSynced } = findLyrics(title, artist);
 
-          if (audioUrl) {
-            ytTracks.push({
-              id: `yt-${videoId || Date.now()}`,
-              videoId,
-              title,
-              artist,
-              album: 'YouTube Music',
-              cover: highResCover,
-              audioUrl,
-              duration: item.duration || 210,
-              genre: 'YouTube',
-              source: 'YouTube',
-              lyrics: findLyrics(title, artist)
-            });
-          }
-        }
-      }
-    } catch(e) {
-      console.warn('YouTube search error:', e.message);
-    }
+        return {
+          id: `sc-${item.id}`,
+          title,
+          artist,
+          album: 'SoundCloud Single',
+          cover: item.artwork_url ? item.artwork_url.replace('-large', '-t500x500') : (item.user?.avatar_url || 'https://images.unsplash.com/photo-1514525253161-7a46d19cd819?w=600'),
+          audioUrl,
+          duration: durationSec,
+          genre: 'SoundCloud',
+          source: 'SoundCloud',
+          lyrics,
+          hasSynced
+        };
+      })
+    );
 
-    const combined = [...scTracks, ...ytTracks];
-    res.json({ success: true, tracks: combined });
+    const scTracks = scTracksResolved.filter(Boolean);
+
+    res.json({ success: true, tracks: scTracks });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
